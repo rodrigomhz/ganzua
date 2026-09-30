@@ -174,6 +174,29 @@ node ganzua.js romper archivo.zip --agresivo --checkpoint progreso.json
 node ganzua.js romper archivo.zip --agresivo --checkpoint progreso.json  # reanuda
 ```
 
+## Otros formatos (7-Zip, RAR)
+
+ganzua ataca **ZIP** de forma nativa (AES-256 por fuerza bruta y ZipCrypto por
+Biham-Kocher). Para **7-Zip** y **RAR** —que requieren un parser propio fuera del
+alcance nativo— `formato` identifica el archivo y te da la vía establecida:
+
+```bash
+node ganzua.js formato archivo.7z
+#   7-Zip (AES-256). Extrae el hash y crackea con hashcat modo 11600:
+#     7z2john archivo.7z > hash.txt && hashcat -m 11600 hash.txt wordlist.txt
+```
+
+| Formato | Cifrado   | Vía                                 |
+| ------- | --------- | ----------------------------------- |
+| ZIP     | AES-256   | **nativo** (`romper` / `extrae`)    |
+| ZIP     | ZipCrypto | **nativo** (`romper`, `textoplano`) |
+| 7-Zip   | AES-256   | `7z2john` + `hashcat -m 11600`      |
+| RAR5    | AES-256   | `rar2john` + `hashcat -m 13000`     |
+| RAR3    | AES-128   | `rar2john` + `hashcat -m 12500`     |
+
+Si pasas un no-ZIP a `romper`/`extrae`, ganzua detecta el formato y te indica
+qué usar en vez de fallar sin más.
+
 ## Comandos
 
 `romper` es el comando principal. El resto son de **apoyo y depuración**:
@@ -183,6 +206,7 @@ node ganzua.js romper archivo.zip --agresivo --checkpoint progreso.json  # reanu
 | **`romper`** | **Encuentra la contraseña sin conocerla (wordlist + patrones).**         |
 | **`extrae`** | **Descifra y vuelca el contenido** (rompe primero si hace falta).        |
 | `textoplano` | Ataque de texto plano ZipCrypto (Biham-Kocher **nativo**).               |
+| `formato`    | Identifica el formato (ZIP/7z/RAR/…) e indica cómo atacarlo.             |
 | `analiza`    | Detecta el cifrado y muestra salt, verificador y auth por entrada.       |
 | `material`   | Emite el hash `$zip2$` para `hashcat -m 13600` / John `zip2john`.        |
 | `verifica`   | Prueba una única contraseña candidata contra el archivo.                 |

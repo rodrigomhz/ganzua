@@ -24,6 +24,7 @@ const aesCrypto = require('./lib/crypto-aes');
 const zipcrypto = require('./lib/crypto-zipcrypto');
 const { recoverKeysParallel } = require('./lib/zipcrypto-attack-parallel');
 const { extractEntries } = require('./lib/extract');
+const formato = require('./lib/format');
 
 // Below this many candidates the worker-pool overhead is not worth it.
 const PARALLEL_THRESHOLD = 4000;
@@ -123,6 +124,12 @@ function describeEncryption(entry) {
 
 function openZip(file) {
   if (!fs.existsSync(file)) fail(`no existe el archivo: ${file}`);
+  // Si no es un ZIP, identifica el formato y orienta al usuario.
+  const fmt = formato.detectFile(file);
+  if (fmt !== 'zip') {
+    const meta = formato.info(fmt);
+    fail(`"${path.basename(file)}" no es un ZIP (parece ${meta.nombre}).\n${meta.guia}`);
+  }
   try {
     return readZip(file);
   } catch (err) {
@@ -666,6 +673,23 @@ async function cmdTextoPlano(positionals, opts) {
   return results.every((r) => r.ok) ? 0 : 1;
 }
 
+// `formato` — identifica el tipo de archivo por su firma e indica cómo atacarlo.
+function cmdFormato(positionals, opts) {
+  const [file] = positionals;
+  if (!file) fail('uso: ganzua formato <archivo> [--json]');
+  if (!fs.existsSync(file)) fail(`no existe el archivo: ${file}`);
+  const id = formato.detectFile(file);
+  const meta = formato.info(id);
+  if (opts.json) {
+    emitJson({ archivo: file, formato: id, nombre: meta.nombre, nativo: meta.nativo, guia: meta.guia });
+    return 0;
+  }
+  out(`ganzua · ${path.basename(file)}: ${meta.nombre} (${id})`);
+  out(`  ${meta.nativo ? '✔ soportado nativamente' : 'ℹ vía externa'}`);
+  for (const line of meta.guia.split('\n')) out(`  ${line}`);
+  return 0;
+}
+
 function cmdAnaliza(positionals, opts) {
   const [file] = positionals;
   if (!file) fail('uso: ganzua analiza <archivo.zip> [--json]');
@@ -869,6 +893,7 @@ OBTENER EL CONTENIDO
                              nativo.
 
 COMANDOS DE APOYO
+  formato  <archivo>         Identifica el formato (ZIP/7z/RAR/…) y cómo atacarlo.
   analiza  <archivo.zip>     Detecta el cifrado y muestra salt/verificador.
   material <archivo.zip>     Emite el hash "$zip2$" para hashcat -m 13600 / John.
   verifica <archivo.zip> <c> Prueba una única candidata.
@@ -914,6 +939,7 @@ const COMMANDS = {
   extrae: cmdExtrae,
   textoplano: cmdTextoPlano,
   busca: cmdBusca,
+  formato: cmdFormato,
   analiza: cmdAnaliza,
   material: cmdMaterial,
   verifica: cmdVerifica,
