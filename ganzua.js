@@ -1,0 +1,442 @@
+#!/usr/bin/env node
+'use strict';
+
+// ganzua — recuperación de contraseñas de archivos ZIP (WinZip AES-256 y
+// ZipCrypto), para archivos propios o cuyo análisis estés autorizado a
+// realizar.
+//
+// Comando principal:  romper   (encuentra la contraseña sin conocerla)
+// Comandos de apoyo:  analiza · material · verifica · busca
+
+const fs = require('fs');
+const path = require('path');
+
+const { readZip, firstEncryptedEntry, ZipError } = require('./lib/zip');
+const { verify, decrypt } = require('./lib/verify');
+const { search } = require('./lib/search');
+const candidates = require('./lib/candidates');
+const aesCrypto = require('./lib/crypto-aes');
+
+const VERSION = require('./package.json').version;
+
+// ---------------------------------------------------------------------------
+// Minimal argument parsing
+// ---------------------------------------------------------------------------
+
+const FLAGS_WITH_VALUE = new Set(['--wordlist', '--patron', '--limite', '--entrada']);
+
+function parseArgs(argv) {
+  const positionals = [];
+  const opts = { json: false, agresivo: false, todas: false };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--json') opts.json = true;
+    else if (a === '--agresivo' || a === '--aggressive') opts.agresivo = true;
+    else if (a === '--todas' || a === '--all') opts.todas = true;
+    else if (a === '--help' || a === '-h') opts.help = true;
+    else if (a === '--version' || a === '-v') opts.version = true;
+    else if (FLAGS_WITH_VALUE.has(a)) {
+      const value = argv[++i];
+      if (value === undefined) fail(`la opción ${a} necesita un valor`);
+      opts[a.slice(2)] = value;
+    } else if (a.startsWith('--') && a.includes('=')) {
+      const [k, ...rest] = a.slice(2).split('=');
+      opts[k] = rest.join('=');
+    } else if (a.startsWith('-') && a !== '-') {
+      fail(`opción desconocida: ${a}`);
+    } else {
+      positionals.push(a);
+    }
+  }
+  return { positionals, opts };
+}
+
+function fail(msg, code = 2) {
+  process.stderr.write(`ganzua: ${msg}\n`);
+  process.exit(code);
+}
+
+// ---------------------------------------------------------------------------
+// Output helpers
+// ---------------------------------------------------------------------------
+
+const isTTY = process.stderr.isTTY;
+
+function out(line = '') {
+  process.stdout.write(line + '\n');
+}
+
+function note(line = '') {
+  process.stderr.write(line + '\n');
+}
+
+function emitJson(obj) {
+  process.stdout.write(JSON.stringify(obj, null, 2) + '\n');
+}
+
+function describeEncryption(entry) {
+  if (entry.encryption === 'aes') {
+    const bits = aesCrypto.STRENGTH[entry.crypto.strength]?.bits ?? '?';
+    const method = entry.method === 8 ? 'DEFLATE' : entry.method === 0 ? 'STORE' : `método ${entry.method}`;
+    const ae = entry.aes?.version === 1 ? 'AE-1' : 'AE-2';
+    return `WinZip AES-${bits} (${ae}, ${method})`;
+  }
+  if (entry.encryption === 'zipcrypto') {
+    const method = entry.method === 8 ? 'DEFLATE' : 'STORE';
+    return `ZipCrypto (PKWARE tradicional, ${method})`;
+  }
+  return 'sin cifrar';
+}
+
+// ---------------------------------------------------------------------------
+// Target resolution
+// ---------------------------------------------------------------------------
+
+function openZip(file) {
+  if (!fs.existsSync(file)) fail(`no existe el archivo: ${file}`);
+  try {
+    return readZip(file);
+  } catch (err) {
+    if (err instanceof ZipError) fail(err.message);
+    throw err;
+  }
+}
+
+function resolveEntry(zip, opts) {
+  if (opts.entrada !== undefined) {
+    const idx = Number(opts.entrada);
+    const entry = zip.entries.find((e) => e.index === idx);
+    if (!entry) fail(`no hay entrada con índice ${idx}`);
+    if (entry.encryption === 'none') fail(`la entrada ${idx} ("${entry.name}") no está cifrada`);
+    return entry;
+  }
+  const entry = firstEncryptedEntry(zip);
+  if (!entry) fail('el ZIP no contiene entradas cifradas');
+  return entry;
+}
+
+// ---------------------------------------------------------------------------
+// Shared search runner (used by `romper` and `busca`)
+// ---------------------------------------------------------------------------
+
+function buildCandidateStream(opts) {
+  const words = opts.wordlist ? candidates.loadWordlist(opts.wordlist) : undefined;
+  if (opts.patron) {
+    return {
+      stream: candidates.patternCandidates(opts.patron, { words, aggressive: opts.agresivo }),
+      total: null,
+      label: `patrón "${opts.patron}"`,
+    };
+  }
+  const total = candidates.estimateCount({ words, aggressive: opts.agresivo });
+  const label = opts.wordlist
+    ? `wordlist ${path.basename(opts.wordlist)}${opts.agresivo ? ' + patrones (agresivo)' : ' + patrones'}`
+    : opts.agresivo
+      ? 'wordlist común + patrones (agresivo)'
+      : 'wordlist común + patrones típicos';
+  return {
+    stream: candidates.romperCandidates({ words, aggressive: opts.agresivo }),
+    total,
+    label,
+  };
+}
+
+function progressReporter(total) {
+  return ({ tried, rate }) => {
+    if (!isTTY) return;
+    const pct = total ? ` · ${((tried / total) * 100).toFixed(0)}%` : '';
+    process.stderr.write(`\r  [ ${tried} probadas · ${Math.round(rate)}/s${pct} ]        `);
+  };
+}
+
+function runSearch(zip, entry, opts) {
+  const { stream, total, label } = buildCandidateStream(opts);
+  const limit = opts.limite ? Number(opts.limite) : undefined;
+
+  if (!opts.json) {
+    note(`ganzua · rompiendo ${path.basename(zip.path)}`);
+    note(`  cifrado: ${describeEncryption(entry)} — entrada "${entry.name}"`);
+    note(`  probando ${label}${total ? ` (~${total} candidatas)` : ''}…`);
+  }
+
+  const result = search(entry, stream, {
+    onProgress: opts.json ? undefined : progressReporter(total),
+    limit,
+  });
+
+  if (isTTY && !opts.json) process.stderr.write('\r' + ' '.repeat(48) + '\r');
+
+  if (opts.json) {
+    emitJson({
+      archivo: zip.path,
+      entrada: { indice: entry.index, nombre: entry.name },
+      cifrado: describeEncryption(entry),
+      encontrada: result.found,
+      contrasena: result.password,
+      candidatas: result.tried,
+      ms: result.elapsedMs,
+    });
+    return result.found ? 0 : 1;
+  }
+
+  const secs = (result.elapsedMs / 1000).toFixed(1);
+  if (result.found) {
+    out('');
+    out(`  ✔ CONTRASEÑA ENCONTRADA: «${result.password}»`);
+    out(`    (${result.tried} candidatas en ${secs} s)`);
+    return 0;
+  }
+
+  note('');
+  note(`  ✗ no encontrada (${result.tried} candidatas en ${secs} s)`);
+  note('  Prueba a continuación:');
+  note(`    • wordlist más grande:  ganzua romper ${path.basename(zip.path)} --wordlist grande.txt`);
+  if (!opts.agresivo) {
+    note(`    • modo agresivo:        ganzua romper ${path.basename(zip.path)} --agresivo`);
+  }
+  note(`    • patrón a medida:      ganzua romper ${path.basename(zip.path)} --patron "Palabra_%s_%d"`);
+  if (entry.encryption === 'aes') {
+    note(`    • GPU / hashcat:        ganzua material ${path.basename(zip.path)} > hash.txt   (modo 13600)`);
+  }
+  return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
+function cmdRomper(positionals, opts) {
+  const [file] = positionals;
+  if (!file) fail('uso: ganzua romper <archivo.zip> [--wordlist f] [--patron p] [--agresivo] [--json]');
+  const zip = openZip(file);
+  const entry = resolveEntry(zip, opts);
+  return runSearch(zip, entry, opts);
+}
+
+// `busca` is the lower-level form of `romper`: same engine, but it requires you
+// to name a source (a wordlist file or a --patron) rather than defaulting to
+// the bundled list.
+function cmdBusca(positionals, opts) {
+  const [file, maybeWordlist] = positionals;
+  if (!file) fail('uso: ganzua busca <archivo.zip> [wordlist.txt | --patron "..."] [--agresivo] [--json]');
+  if (maybeWordlist && !opts.wordlist && !opts.patron) opts.wordlist = maybeWordlist;
+  if (!opts.wordlist && !opts.patron) {
+    fail('busca necesita una wordlist o --patron (para valores por defecto usa: ganzua romper)');
+  }
+  const zip = openZip(file);
+  const entry = resolveEntry(zip, opts);
+  return runSearch(zip, entry, opts);
+}
+
+function cmdAnaliza(positionals, opts) {
+  const [file] = positionals;
+  if (!file) fail('uso: ganzua analiza <archivo.zip> [--json]');
+  const zip = openZip(file);
+
+  const report = zip.entries.map((e) => {
+    const base = {
+      indice: e.index,
+      nombre: e.name,
+      cifrado: e.encryption,
+      metodo: e.method === 8 ? 'DEFLATE' : e.method === 0 ? 'STORE' : `método ${e.method}`,
+      tamano_comprimido: e.compressedSize,
+      tamano_original: e.uncompressedSize,
+    };
+    if (e.encryption === 'aes') {
+      base.aes = {
+        fuerza_bits: aesCrypto.STRENGTH[e.crypto.strength]?.bits,
+        version: e.aes?.version === 1 ? 'AE-1' : 'AE-2',
+        salt: e.crypto.salt.toString('hex'),
+        verificador: e.crypto.verify.toString('hex'),
+        auth: e.crypto.auth.toString('hex'),
+      };
+    } else if (e.encryption === 'zipcrypto') {
+      base.zipcrypto = {
+        check_byte_desde: e.flags & 0x08 ? 'mod-time' : 'crc32',
+        cabecera: e.crypto.header.toString('hex'),
+      };
+    }
+    return base;
+  });
+
+  if (opts.json) {
+    emitJson({ archivo: zip.path, zip64: zip.zip64, entradas: report });
+    return 0;
+  }
+
+  out(`ganzua · análisis de ${path.basename(zip.path)}`);
+  if (zip.zip64) out('  (ZIP64)');
+  for (const e of report) {
+    out('');
+    out(`  [${e.indice}] ${e.nombre}`);
+    out(`      cifrado: ${describeEncryption(zip.entries[e.indice])}`);
+    out(`      tamaño:  ${e.tamano_original} B (comprimido ${e.tamano_comprimido} B)`);
+    if (e.aes) {
+      out(`      salt:    ${e.aes.salt}`);
+      out(`      verif.:  ${e.aes.verificador}   auth: ${e.aes.auth}`);
+    } else if (e.zipcrypto) {
+      out(`      check byte desde: ${e.zipcrypto.check_byte_desde}`);
+    }
+  }
+  return 0;
+}
+
+// hashcat mode 13600 / John zip2john "$zip2$" hash for an AES entry.
+function buildZip2Hash(entry) {
+  const c = entry.crypto;
+  const dataHex = c.ciphertext.toString('hex');
+  const lenHex = c.ciphertext.length.toString(16);
+  return [
+    '$zip2$',
+    '0', // type
+    String(c.strength), // 1/2/3 => 128/192/256
+    '0', // magic
+    c.salt.toString('hex'),
+    c.verify.toString('hex'),
+    lenHex,
+    dataHex,
+    c.auth.toString('hex'),
+    '$/zip2$',
+  ].join('*');
+}
+
+function cmdMaterial(positionals, opts) {
+  const [file] = positionals;
+  if (!file) fail('uso: ganzua material <archivo.zip> [--entrada N] [--json]');
+  const zip = openZip(file);
+  const entry = resolveEntry(zip, opts);
+  if (entry.encryption !== 'aes') {
+    fail(`material genera hashes AES (modo 13600); la entrada "${entry.name}" es ${entry.encryption}`);
+  }
+  const hash = buildZip2Hash(entry);
+  if (opts.json) {
+    emitJson({
+      archivo: zip.path,
+      entrada: { indice: entry.index, nombre: entry.name },
+      modo_hashcat: 13600,
+      fuerza_bits: aesCrypto.STRENGTH[entry.crypto.strength]?.bits,
+      salt: entry.crypto.salt.toString('hex'),
+      verificador: entry.crypto.verify.toString('hex'),
+      auth: entry.crypto.auth.toString('hex'),
+      hash,
+    });
+    return 0;
+  }
+  out(hash);
+  return 0;
+}
+
+function cmdVerifica(positionals, opts) {
+  const [file, password] = positionals;
+  if (!file || password === undefined) fail('uso: ganzua verifica <archivo.zip> <candidata> [--json]');
+  const zip = openZip(file);
+  const entry = resolveEntry(zip, opts);
+  const ok = verify(entry, password);
+  if (opts.json) {
+    emitJson({
+      archivo: zip.path,
+      entrada: { indice: entry.index, nombre: entry.name },
+      candidata: password,
+      valida: ok,
+    });
+    return ok ? 0 : 1;
+  }
+  if (ok) out(`✔ contraseña válida: «${password}»`);
+  else out(`✗ contraseña incorrecta: «${password}»`);
+  return ok ? 0 : 1;
+}
+
+// ---------------------------------------------------------------------------
+// Help / version
+// ---------------------------------------------------------------------------
+
+function printHelp() {
+  out(`ganzua ${VERSION} — recupera la contraseña de archivos ZIP cifrados
+(WinZip AES-256 y ZipCrypto). Para archivos propios o cuyo análisis estés
+autorizado a realizar.
+
+USO
+  ganzua <comando> <archivo.zip> [opciones]
+
+COMANDO PRINCIPAL
+  romper <archivo.zip>       Encuentra la contraseña sin conocerla: detecta el
+                             cifrado y prueba una wordlist común incluida más
+                             patrones típicos (palabra+año, mayúscula+número,
+                             año+sufijo). Si no la encuentra, indica qué probar.
+      --wordlist <fichero>   Usa tu propia wordlist en vez de la incluida.
+      --patron "<plantilla>" Genera candidatas desde una plantilla (ver abajo).
+      --agresivo             Amplía años y sufijos automáticamente.
+      --json                 Salida JSON.
+
+COMANDOS DE APOYO
+  analiza  <archivo.zip>     Detecta el cifrado y muestra salt/verificador.
+  material <archivo.zip>     Emite el hash "$zip2$" para hashcat -m 13600 / John.
+  verifica <archivo.zip> <c> Prueba una única candidata.
+  busca    <archivo.zip> ... Búsqueda de bajo nivel (requiere wordlist o --patron).
+
+OPCIONES COMUNES
+  --entrada <N>              Índice de entrada a atacar (por defecto, la primera
+                             cifrada). Usa "analiza" para ver los índices.
+  --json                     Salida en JSON.
+  -h, --help                 Esta ayuda.       -v, --version   Versión.
+
+PLANTILLAS DE --patron
+  %s palabra de la wordlist   %c palabra capitalizada   %y año
+  %n dígito 0-9               %D número 00-99
+  Ejemplo:  ganzua romper archivo.zip --patron "Palabra_%s_%y"
+
+EJEMPLOS
+  ganzua romper   archivo.zip
+  ganzua romper   archivo.zip --agresivo
+  ganzua romper   archivo.zip --wordlist rockyou.txt
+  ganzua analiza  archivo.zip
+  ganzua material archivo.zip > hash.txt
+  ganzua verifica archivo.zip "Secreto_2024"
+
+Uso autorizado únicamente. No utilices ganzua contra archivos que no te
+pertenezcan o para los que no tengas permiso explícito.`);
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch
+// ---------------------------------------------------------------------------
+
+const COMMANDS = {
+  romper: cmdRomper,
+  busca: cmdBusca,
+  analiza: cmdAnaliza,
+  material: cmdMaterial,
+  verifica: cmdVerifica,
+};
+
+function main(argv) {
+  const { positionals, opts } = parseArgs(argv);
+  const command = positionals.shift();
+
+  if (opts.version || command === 'version') {
+    out(`ganzua ${VERSION}`);
+    return 0;
+  }
+  if (!command || command === 'help' || opts.help) {
+    printHelp();
+    return 0;
+  }
+
+  const handler = COMMANDS[command];
+  if (!handler) {
+    fail(`comando desconocido: ${command}\nEjecuta "ganzua --help" para ver los comandos.`);
+  }
+
+  try {
+    return handler(positionals, opts) || 0;
+  } catch (err) {
+    if (err instanceof ZipError) fail(err.message);
+    throw err;
+  }
+}
+
+if (require.main === module) {
+  process.exit(main(process.argv.slice(2)));
+}
+
+module.exports = { main, parseArgs, buildZip2Hash };

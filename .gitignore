@@ -1,0 +1,5 @@
+node_modules/
+# Fixtures cifrados regenerados por `npm run pretest` (no versionar binarios).
+test/fixtures/out/
+*.log
+.DS_Store
