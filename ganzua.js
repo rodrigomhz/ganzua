@@ -12,7 +12,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { readZip, firstEncryptedEntry, ZipError } = require('./lib/zip');
+const { readZip, firstEncryptedEntry, ZipError, methodName } = require('./lib/zip');
 const { verify } = require('./lib/verify');
 const { searchAsync } = require('./lib/search');
 const { searchParallel, defaultWorkers } = require('./lib/search-parallel');
@@ -107,13 +107,11 @@ function emitJson(obj) {
 function describeEncryption(entry) {
   if (entry.encryption === 'aes') {
     const bits = aesCrypto.STRENGTH[entry.crypto.strength]?.bits ?? '?';
-    const method = entry.method === 8 ? 'DEFLATE' : entry.method === 0 ? 'STORE' : `método ${entry.method}`;
     const ae = entry.aes?.version === 1 ? 'AE-1' : 'AE-2';
-    return `WinZip AES-${bits} (${ae}, ${method})`;
+    return `WinZip AES-${bits} (${ae}, ${methodName(entry.method)})`;
   }
   if (entry.encryption === 'zipcrypto') {
-    const method = entry.method === 8 ? 'DEFLATE' : 'STORE';
-    return `ZipCrypto (PKWARE tradicional, ${method})`;
+    return `ZipCrypto (PKWARE tradicional, ${methodName(entry.method)})`;
   }
   return 'sin cifrar';
 }
@@ -714,7 +712,7 @@ function cmdAnaliza(positionals, opts) {
       indice: e.index,
       nombre: e.name,
       cifrado: e.encryption,
-      metodo: e.method === 8 ? 'DEFLATE' : e.method === 0 ? 'STORE' : `método ${e.method}`,
+      metodo: methodName(e.method),
       tamano_comprimido: e.compressedSize,
       tamano_original: e.uncompressedSize,
     };
