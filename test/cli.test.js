@@ -75,7 +75,7 @@ test('analiza lista todas las entradas de un ZIP multi-entrada', () => {
   assert.strictEqual(j.entradas.length, 3);
   assert.deepStrictEqual(
     j.entradas.map((e) => e.nombre),
-    ['uno.txt', 'dos.txt', 'tres.txt']
+    ['uno.txt', 'dos.txt', 'tres.txt'],
   );
 });
 
@@ -99,7 +99,14 @@ test('material --todas emite un hash por entrada AES', () => {
 });
 
 test('--entrada N selecciona una entrada concreta', () => {
-  const { status, stdout } = runCli(['verifica', '--entrada', '2', '--json', fixturePath('aes256-multi.zip'), 'Comun_2023']);
+  const { status, stdout } = runCli([
+    'verifica',
+    '--entrada',
+    '2',
+    '--json',
+    fixturePath('aes256-multi.zip'),
+    'Comun_2023',
+  ]);
   const j = JSON.parse(stdout);
   assert.strictEqual(status, 0);
   assert.strictEqual(j.entrada.indice, 2);

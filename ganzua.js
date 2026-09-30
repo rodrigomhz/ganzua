@@ -9,11 +9,10 @@
 // Comandos de apoyo:  analiza · material · verifica · busca
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
 const { readZip, firstEncryptedEntry, ZipError } = require('./lib/zip');
-const { verify, decrypt } = require('./lib/verify');
+const { verify } = require('./lib/verify');
 const { searchAsync } = require('./lib/search');
 const { searchParallel, defaultWorkers } = require('./lib/search-parallel');
 const candidates = require('./lib/candidates');
@@ -29,7 +28,15 @@ const VERSION = require('./package.json').version;
 // Minimal argument parsing
 // ---------------------------------------------------------------------------
 
-const FLAGS_WITH_VALUE = new Set(['--wordlist', '--patron', '--mascara', '--limite', '--entrada', '--hilos', '--checkpoint']);
+const FLAGS_WITH_VALUE = new Set([
+  '--wordlist',
+  '--patron',
+  '--mascara',
+  '--limite',
+  '--entrada',
+  '--hilos',
+  '--checkpoint',
+]);
 
 function parseArgs(argv) {
   const positionals = [];
@@ -595,7 +602,7 @@ if (require.main === module) {
     (err) => {
       process.stderr.write(`ganzua: ${err && err.stack ? err.stack : err}\n`);
       process.exit(1);
-    }
+    },
   );
 }
 

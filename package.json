@@ -8,7 +8,11 @@
   "main": "ganzua.js",
   "scripts": {
     "pretest": "node test/fixtures/generate.js",
-    "test": "node --test \"test/*.test.js\"",
+    "test": "node --test test/*.test.js",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "coverage": "node test/fixtures/generate.js && c8 --reporter=text --reporter=lcov node --test test/*.test.js",
     "romper": "node ganzua.js romper"
   },
   "keywords": [
@@ -29,5 +33,10 @@
     "ganzua.js",
     "lib/",
     "data/"
-  ]
+  ],
+  "devDependencies": {
+    "c8": "^10.1.3",
+    "eslint": "^9.39.5",
+    "prettier": "^3.9.9"
+  }
 }

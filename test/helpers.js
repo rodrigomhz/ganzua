@@ -19,7 +19,15 @@ function loadManifest() {
 }
 
 // Create a single WinZip-AES ZIP via pyzipper. Returns the file path.
-function makeAesZip({ dir, file = 'blind.zip', entry = 'secreto.txt', content = 'contenido secreto\n', method = 'store', nbits = 256, password }) {
+function makeAesZip({
+  dir,
+  file = 'blind.zip',
+  entry = 'secreto.txt',
+  content = 'contenido secreto\n',
+  method = 'store',
+  nbits = 256,
+  password,
+}) {
   const outDir = dir || fs.mkdtempSync(path.join(os.tmpdir(), 'ganzua-blind-'));
   const spec = [{ file, entry, method, nbits, password, content }];
   const res = spawnSync('python3', [path.join(__dirname, 'fixtures', 'gen_aes.py'), outDir, JSON.stringify(spec)], {

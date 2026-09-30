@@ -63,10 +63,14 @@ test('searchAsync: onCheckpoint reporta posiciones crecientes', async () => {
   const zip = readZip(fixturePath('aes256-store.zip'));
   const entry = zip.entries[0];
   const positions = [];
-  await searchAsync(entry, Array.from({ length: 2000 }, (_, i) => `x_${i}`), {
-    checkpointEvery: 500,
-    onCheckpoint: (p) => positions.push(p),
-  });
+  await searchAsync(
+    entry,
+    Array.from({ length: 2000 }, (_, i) => `x_${i}`),
+    {
+      checkpointEvery: 500,
+      onCheckpoint: (p) => positions.push(p),
+    },
+  );
   assert.ok(positions.length >= 2, `esperaba varios checkpoints, hubo ${positions.length}`);
   for (let i = 1; i < positions.length; i++) assert.ok(positions[i] > positions[i - 1]);
 });
@@ -89,6 +93,10 @@ test('searchParallel: abort previo deja stopped', async () => {
   const entry = zip.entries[0];
   const ac = new AbortController();
   ac.abort();
-  const res = await searchParallel(entry, Array.from({ length: 10000 }, (_, i) => `n${i}`), { workers: 2, signal: ac.signal });
+  const res = await searchParallel(
+    entry,
+    Array.from({ length: 10000 }, (_, i) => `n${i}`),
+    { workers: 2, signal: ac.signal },
+  );
   assert.strictEqual(res.stopped, true);
 });

@@ -72,13 +72,13 @@ grandes de calidad, [SecLists](https://github.com/danielmiessler/SecLists)
 
 `--patron` genera candidatas desde una plantilla con marcadores:
 
-| Marcador | Expande a                     |
-|----------|-------------------------------|
-| `%s`     | palabra de la wordlist        |
-| `%c`     | palabra capitalizada          |
-| `%y`     | año (rango del modo)          |
-| `%n`     | dígito `0`–`9`                |
-| `%D`     | número `00`–`99`              |
+| Marcador | Expande a              |
+| -------- | ---------------------- |
+| `%s`     | palabra de la wordlist |
+| `%c`     | palabra capitalizada   |
+| `%y`     | año (rango del modo)   |
+| `%n`     | dígito `0`–`9`         |
+| `%D`     | número `00`–`99`       |
 
 ```bash
 node ganzua.js romper archivo.zip --patron "Empresa_%s_%y"
@@ -89,14 +89,14 @@ node ganzua.js romper archivo.zip --patron "Empresa_%s_%y"
 `--mascara` prueba todas las combinaciones de una máscara estilo hashcat, útil
 cuando conoces la estructura de la contraseña:
 
-| Token | Conjunto        |
-|-------|-----------------|
-| `?l`  | `a`–`z`         |
-| `?u`  | `A`–`Z`         |
-| `?d`  | `0`–`9`         |
-| `?s`  | símbolos        |
-| `?a`  | todo lo anterior|
-| `??`  | literal `?`     |
+| Token | Conjunto         |
+| ----- | ---------------- |
+| `?l`  | `a`–`z`          |
+| `?u`  | `A`–`Z`          |
+| `?d`  | `0`–`9`          |
+| `?s`  | símbolos         |
+| `?a`  | todo lo anterior |
+| `??`  | literal `?`      |
 
 El resto de caracteres son literales:
 
@@ -123,13 +123,13 @@ node ganzua.js romper archivo.zip --agresivo --checkpoint progreso.json  # reanu
 
 `romper` es el comando principal. El resto son de **apoyo y depuración**:
 
-| Comando    | Para qué sirve |
-|------------|----------------|
-| **`romper`** | **Encuentra la contraseña sin conocerla (wordlist + patrones).** |
-| `analiza`  | Detecta el cifrado y muestra salt, verificador y auth por entrada. |
-| `material` | Emite el hash `$zip2$` para `hashcat -m 13600` / John `zip2john`. |
-| `verifica` | Prueba una única contraseña candidata contra el archivo. |
-| `busca`    | Búsqueda de bajo nivel: como `romper`, pero exige wordlist o `--patron`. |
+| Comando      | Para qué sirve                                                           |
+| ------------ | ------------------------------------------------------------------------ |
+| **`romper`** | **Encuentra la contraseña sin conocerla (wordlist + patrones).**         |
+| `analiza`    | Detecta el cifrado y muestra salt, verificador y auth por entrada.       |
+| `material`   | Emite el hash `$zip2$` para `hashcat -m 13600` / John `zip2john`.        |
+| `verifica`   | Prueba una única contraseña candidata contra el archivo.                 |
+| `busca`      | Búsqueda de bajo nivel: como `romper`, pero exige wordlist o `--patron`. |
 
 ```bash
 node ganzua.js analiza  archivo.zip
@@ -152,11 +152,11 @@ encontrada), y `--help` / `--version`.
   autenticación HMAC-SHA1 de 10 bytes — sin necesidad de descifrar todo el
   contenido. Cero falsos positivos.
 - **ZipCrypto** (PKWARE tradicional): keystream de 96 bits. Rechazo rápido por
-  el *check byte* de la cabecera (12 bytes) y confirmación definitiva
+  el _check byte_ de la cabecera (12 bytes) y confirmación definitiva
   descifrando el cuerpo y comparando el CRC-32.
 - Parsea la cabecera local del ZIP directamente, usando el directorio central
-  como fuente autoritativa de tamaños y flags (fiable incluso con *data
-  descriptor*).
+  como fuente autoritativa de tamaños y flags (fiable incluso con _data
+  descriptor_).
 
 El cuello de botella en AES-256 es PBKDF2 (~1k intentos/s por hilo, según la
 CPU). `romper` y `busca` **paralelizan con `worker_threads`** por defecto: usan
@@ -197,5 +197,5 @@ está en **dominio público (CC0)**; su origen se documenta en
 
 ---
 
-*Hecho para uso forense y CTF. Solo para archivos que te pertenezcan o cuyo
-análisis estés autorizado a realizar.*
+_Hecho para uso forense y CTF. Solo para archivos que te pertenezcan o cuyo
+análisis estés autorizado a realizar._

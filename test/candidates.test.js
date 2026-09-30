@@ -62,7 +62,18 @@ test('patternCandidates con %n y %D produce dígitos', () => {
 });
 
 test('maskCandidates expande máscaras estilo hashcat', () => {
-  assert.deepStrictEqual(collect(candidates.maskCandidates('A?d')), ['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9']);
+  assert.deepStrictEqual(collect(candidates.maskCandidates('A?d')), [
+    'A0',
+    'A1',
+    'A2',
+    'A3',
+    'A4',
+    'A5',
+    'A6',
+    'A7',
+    'A8',
+    'A9',
+  ]);
   const dd = collect(candidates.maskCandidates('?d?d'));
   assert.strictEqual(dd.length, 100);
   assert.strictEqual(dd[0], '00');

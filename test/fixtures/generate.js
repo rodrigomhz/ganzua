@@ -15,8 +15,7 @@ const path = require('path');
 const outDir = path.join(__dirname, 'out');
 fs.mkdirSync(outDir, { recursive: true });
 
-const deflateText =
-  'ganzua es una herramienta de recuperación de contraseñas ZIP. '.repeat(40);
+const deflateText = 'ganzua es una herramienta de recuperación de contraseñas ZIP. '.repeat(40);
 
 // --- AES fixtures (pyzipper) ------------------------------------------------
 
@@ -78,11 +77,9 @@ const aesSpecs = [
 ];
 
 function genAes() {
-  const res = spawnSync(
-    'python3',
-    [path.join(__dirname, 'gen_aes.py'), outDir, JSON.stringify(aesSpecs)],
-    { stdio: 'inherit' }
-  );
+  const res = spawnSync('python3', [path.join(__dirname, 'gen_aes.py'), outDir, JSON.stringify(aesSpecs)], {
+    stdio: 'inherit',
+  });
   if (res.status !== 0) {
     console.error('ganzua(fixtures): fallo generando fixtures AES (¿pyzipper instalado?).');
     process.exit(res.status || 1);
@@ -92,7 +89,13 @@ function genAes() {
 // --- ZipCrypto fixtures (system `zip`) --------------------------------------
 
 const zcSpecs = [
-  { file: 'zipcrypto-store.zip', entry: 'mensaje.txt', store: true, password: 'clave123', content: 'contenido zipcrypto de prueba\n' },
+  {
+    file: 'zipcrypto-store.zip',
+    entry: 'mensaje.txt',
+    store: true,
+    password: 'clave123',
+    content: 'contenido zipcrypto de prueba\n',
+  },
   { file: 'zipcrypto-deflate.zip', entry: 'largo.txt', store: false, password: 'otra_clave', content: deflateText },
 ];
 
