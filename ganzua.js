@@ -19,7 +19,9 @@ const { searchParallel, defaultWorkers } = require('./lib/search-parallel');
 const candidates = require('./lib/candidates');
 const checkpoint = require('./lib/checkpoint');
 const hashcat = require('./lib/hashcat');
+const bkcrack = require('./lib/bkcrack');
 const aesCrypto = require('./lib/crypto-aes');
+const zipcrypto = require('./lib/crypto-zipcrypto');
 const { extractEntries } = require('./lib/extract');
 
 // Below this many candidates the worker-pool overhead is not worth it.
@@ -40,6 +42,10 @@ const FLAGS_WITH_VALUE = new Set([
   '--hilos',
   '--checkpoint',
   '--salida',
+  '--claves',
+  '--plano',
+  '--plano-hex',
+  '--offset',
 ]);
 
 function parseArgs(argv) {
@@ -469,12 +475,39 @@ async function cmdBusca(positionals, opts) {
   return crack(zip, entry, opts);
 }
 
-// `extrae` — descifra y vuelca el contenido. Con contraseña la usa; sin ella,
-// primero la recupera (como romper). Protege contra path traversal (zip slip).
+// Parsea claves internas ZipCrypto "k0:k1:k2" (hex, separadas por :,/espacio).
+function parseClaves(str) {
+  const parts = str
+    .trim()
+    .split(/[\s,:]+/)
+    .filter(Boolean);
+  if (parts.length !== 3) fail('--claves espera 3 claves hexadecimales: k0:k1:k2');
+  return parts.map((p) => {
+    if (!/^[0-9a-fA-F]{1,8}$/.test(p)) fail(`clave hexadecimal inválida: ${p}`);
+    return parseInt(p, 16) >>> 0;
+  });
+}
+
+// Valida claves internas contra la primera entrada ZipCrypto (CRC).
+function validateKeys(zip, targets, keys) {
+  const zc = targets.find((e) => e.encryption === 'zipcrypto');
+  if (!zc) fail('--claves solo aplica a entradas ZipCrypto');
+  try {
+    const plain = zipcrypto.decryptWithKeys(zc.crypto, keys);
+    const ok = zc.crc === 0 ? true : zipcrypto.crc32(plain) === zc.crc >>> 0;
+    if (!ok) fail('las claves no descifran correctamente (CRC no coincide)');
+  } catch {
+    fail('las claves no descifran correctamente');
+  }
+}
+
+// `extrae` — descifra y vuelca el contenido. Con contraseña la usa; con --claves
+// usa las claves internas ZipCrypto recuperadas; sin nada, rompe primero (como
+// romper). Protege contra path traversal (zip slip).
 async function cmdExtrae(positionals, opts) {
   const [file, passwordArg] = positionals;
   if (!file) {
-    fail('uso: ganzua extrae <archivo.zip> [contraseña] [--salida dir] [--entrada N | --todas]');
+    fail('uso: ganzua extrae <archivo.zip> [contraseña] [--claves k0:k1:k2] [--salida dir] [--entrada N | --todas]');
   }
   const zip = openZip(file);
   const outDir = opts.salida || '.';
@@ -491,10 +524,17 @@ async function cmdExtrae(positionals, opts) {
   }
   if (targets.length === 0) fail('el ZIP no tiene entradas');
 
-  // Contraseña: la del argumento (verificada) o recuperada por fuerza bruta.
   const encTargets = targets.filter((e) => e.encryption !== 'none');
+
+  // Ruta por claves internas ZipCrypto (sin contraseña).
+  let keys = null;
   let password = passwordArg;
-  if (encTargets.length > 0) {
+  if (opts.claves) {
+    keys = parseClaves(opts.claves);
+    validateKeys(zip, targets, keys);
+    if (!opts.json) out(`  ✔ claves ZipCrypto: ${keys.map((k) => k.toString(16).padStart(8, '0')).join(' ')}`);
+  } else if (encTargets.length > 0) {
+    // Contraseña: la del argumento (verificada) o recuperada por fuerza bruta.
     if (password) {
       if (!verify(encTargets[0], password)) {
         fail(`contraseña incorrecta para "${encTargets[0].name}"`);
@@ -512,7 +552,7 @@ async function cmdExtrae(positionals, opts) {
   }
 
   fs.mkdirSync(outDir, { recursive: true });
-  const results = extractEntries(zip, targets, { password, outDir });
+  const results = extractEntries(zip, targets, { password, keys, outDir });
   const okCount = results.filter((r) => r.ok).length;
 
   if (opts.json) {
@@ -520,11 +560,67 @@ async function cmdExtrae(positionals, opts) {
       archivo: zip.path,
       salida: outDir,
       contrasena: password || null,
+      claves: keys ? keys.map((k) => k.toString(16).padStart(8, '0')) : null,
       extraidas: okCount,
       entradas: results,
     });
     return results.every((r) => r.ok) ? 0 : 1;
   }
+  for (const r of results) {
+    if (r.ok) out(`  ✔ ${r.nombre}${r.directorio ? '' : ` (${r.bytes} B)`}`);
+    else out(`  ✗ ${r.nombre} — ${r.error}`);
+  }
+  out(`  extraídas ${okCount}/${results.length} entradas en ${outDir}`);
+  return results.every((r) => r.ok) ? 0 : 1;
+}
+
+// `textoplano` — ataque de texto plano conocido contra ZipCrypto (Biham-Kocher)
+// vía bkcrack: recupera las claves internas y descifra/extrae todo el archivo
+// sin la contraseña, independientemente de su longitud.
+async function cmdTextoPlano(positionals, opts) {
+  const [file] = positionals;
+  if (!file) {
+    fail(
+      'uso: ganzua textoplano <archivo.zip> [--entrada N] (--plano <fichero> | --plano-hex <hex> [--offset N]) [--salida dir]',
+    );
+  }
+  const zip = openZip(file);
+  const entry = resolveEntry(zip, opts);
+  if (entry.encryption !== 'zipcrypto') {
+    fail(`textoplano ataca ZipCrypto por texto plano conocido; "${entry.name}" es ${entry.encryption}`);
+  }
+  if (!opts.plano && !opts['plano-hex']) {
+    fail('indica el texto plano conocido: --plano <fichero> o --plano-hex <hex> [--offset N] (≥12 bytes, 8 contiguos)');
+  }
+  if (!bkcrack.isAvailable()) {
+    fail(
+      'bkcrack no está en el PATH. Instálalo (https://github.com/kimci86/bkcrack) para el ataque de texto plano.\n' +
+        `Si ya conoces las claves internas: ganzua extrae ${path.basename(file)} --claves k0:k1:k2`,
+    );
+  }
+
+  if (!opts.json) note(`ganzua · ataque de texto plano (bkcrack) sobre "${entry.name}"…`);
+  const keys = bkcrack.run({
+    zip: file,
+    entry: entry.name,
+    plainFile: opts.plano,
+    offset: opts.offset,
+    hex: opts['plano-hex'],
+  });
+  if (!keys) fail('bkcrack no recuperó las claves (¿texto plano suficiente? ≥12 bytes con 8 contiguos)');
+
+  const outDir = opts.salida || '.';
+  fs.mkdirSync(outDir, { recursive: true });
+  const targets = zip.entries.filter((e) => e.encryption === 'zipcrypto' || e.encryption === 'none');
+  const results = extractEntries(zip, targets, { keys, outDir });
+  const okCount = results.filter((r) => r.ok).length;
+  const clavesHex = keys.map((k) => k.toString(16).padStart(8, '0'));
+
+  if (opts.json) {
+    emitJson({ archivo: zip.path, claves: clavesHex, salida: outDir, extraidas: okCount, entradas: results });
+    return results.every((r) => r.ok) ? 0 : 1;
+  }
+  out(`  ✔ claves ZipCrypto: ${clavesHex.join(' ')}`);
   for (const r of results) {
     if (r.ok) out(`  ✔ ${r.nombre}${r.directorio ? '' : ` (${r.bytes} B)`}`);
     else out(`  ✗ ${r.nombre} — ${r.error}`);
@@ -714,8 +810,16 @@ OBTENER EL CONTENIDO
   extrae <archivo.zip> [contraseña]
                              Descifra y vuelca los ficheros. Si no das la
                              contraseña, la recupera primero (como romper).
+      --claves k0:k1:k2      Descifra ZipCrypto con claves internas recuperadas
+                             (p. ej. de bkcrack), sin contraseña.
       --salida <dir>         Carpeta de salida (por defecto, la actual).
       --entrada N | --todas  Qué extraer (por defecto, todo).
+
+  textoplano <archivo.zip>   Ataque de texto plano conocido contra ZipCrypto
+                             (Biham-Kocher, vía bkcrack): recupera las claves y
+                             descifra TODO sin la contraseña, sea cual sea.
+      --plano <fichero>      Texto plano conocido (≥12 bytes, 8 contiguos).
+      --plano-hex <hex> [--offset N]   Texto plano como hex a un offset.
 
 COMANDOS DE APOYO
   analiza  <archivo.zip>     Detecta el cifrado y muestra salt/verificador.
@@ -761,6 +865,7 @@ pertenezcan o para los que no tengas permiso explícito.`);
 const COMMANDS = {
   romper: cmdRomper,
   extrae: cmdExtrae,
+  textoplano: cmdTextoPlano,
   busca: cmdBusca,
   analiza: cmdAnaliza,
   material: cmdMaterial,

@@ -49,6 +49,27 @@ node ganzua.js extrae archivo.zip "Barcelona2024" --salida .  # con contraseña 
 
 Verifica el CRC-32 de cada fichero y protege contra _path traversal_ (zip slip).
 
+### ZipCrypto: ataque de texto plano (sin contraseña)
+
+El cifrado clásico **ZipCrypto está roto**: con ~12 bytes de texto plano conocido
+(8 contiguos) de una entrada se recuperan las claves internas y se descifra
+**todo el archivo, sea cual sea la longitud de la contraseña** (ataque de
+Biham-Kocher). ganzua lo integra vía [`bkcrack`](https://github.com/kimci86/bkcrack)
+si está en el `PATH`:
+
+```bash
+# Conoces parte del contenido de una entrada (p. ej. una cabecera conocida):
+node ganzua.js textoplano archivo.zip --entrada 0 --plano cabecera_conocida.bin --salida ./out
+
+# O, si ya recuperaste las claves internas (con bkcrack u otra herramienta),
+# extrae directamente sin contraseña:
+node ganzua.js extrae archivo.zip --claves 12345678:9abcdef0:0f1e2d3c --salida ./out
+```
+
+> El descifrado a partir de claves internas es nativo de ganzua; el propio ataque
+> Biham-Kocher se delega hoy en `bkcrack`. Una implementación nativa del ataque
+> está en la hoja de ruta.
+
 Cuando no la encuentra con los valores por defecto:
 
 ```text
@@ -139,6 +160,7 @@ node ganzua.js romper archivo.zip --agresivo --checkpoint progreso.json  # reanu
 | ------------ | ------------------------------------------------------------------------ |
 | **`romper`** | **Encuentra la contraseña sin conocerla (wordlist + patrones).**         |
 | **`extrae`** | **Descifra y vuelca el contenido** (rompe primero si hace falta).        |
+| `textoplano` | Ataque de texto plano ZipCrypto (Biham-Kocher, vía bkcrack).             |
 | `analiza`    | Detecta el cifrado y muestra salt, verificador y auth por entrada.       |
 | `material`   | Emite el hash `$zip2$` para `hashcat -m 13600` / John `zip2john`.        |
 | `verifica`   | Prueba una única contraseña candidata contra el archivo.                 |
