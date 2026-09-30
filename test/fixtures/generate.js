@@ -97,6 +97,15 @@ const zcSpecs = [
     content: 'contenido zipcrypto de prueba\n',
   },
   { file: 'zipcrypto-deflate.zip', entry: 'largo.txt', store: false, password: 'otra_clave', content: deflateText },
+  // ZIP64 forzado (-fz): la talla real va en el campo extra 0x0001.
+  {
+    file: 'zip64-store.zip',
+    entry: 'z64.txt',
+    store: true,
+    zip64: true,
+    password: 'clave64',
+    content: 'contenido zip64 de prueba\n',
+  },
 ];
 
 function genZipCrypto() {
@@ -113,6 +122,7 @@ function genZipCrypto() {
     fs.rmSync(dest, { force: true });
     const args = ['-q', '-e', '-j'];
     if (s.store) args.push('-0');
+    if (s.zip64) args.push('-fz');
     args.push('-P', s.password, dest, src);
     const res = spawnSync('zip', args, { stdio: 'inherit' });
     if (res.status !== 0) {
