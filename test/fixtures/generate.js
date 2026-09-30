@@ -47,6 +47,22 @@ const aesSpecs = [
     password: 'password123',
     content: 'esto lo encuentra romper con los valores por defecto\n',
   },
+  {
+    file: 'aes128-store.zip',
+    entry: 'a128.txt',
+    method: 'store',
+    nbits: 128,
+    password: 'Clave_128',
+    content: 'contenido cifrado con AES-128\n',
+  },
+  {
+    file: 'aes192-deflate.zip',
+    entry: 'a192.txt',
+    method: 'deflate',
+    nbits: 192,
+    password: 'Clave_192',
+    content: deflateText,
+  },
 ];
 
 function genAes() {

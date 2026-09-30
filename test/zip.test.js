@@ -17,6 +17,20 @@ test('detecta el método de cifrado por entrada', () => {
   assert.strictEqual(zc.entries[0].method, 8); // DEFLATE
 });
 
+test('detecta las tres fuerzas AES con su longitud de salt', () => {
+  const cases = [
+    ['aes128-store.zip', 1, 8],
+    ['aes192-deflate.zip', 2, 12],
+    ['aes256-store.zip', 3, 16],
+  ];
+  for (const [file, strength, saltLen] of cases) {
+    const zip = readZip(fixturePath(file));
+    const c = zip.entries[0].crypto;
+    assert.strictEqual(c.strength, strength, `${file}: fuerza`);
+    assert.strictEqual(c.salt.length, saltLen, `${file}: salt`);
+  }
+});
+
 test('extrae el material AES con longitudes coherentes', () => {
   const zip = readZip(fixturePath('aes256-store.zip'));
   const c = zip.entries[0].crypto;

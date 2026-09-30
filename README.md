@@ -108,8 +108,9 @@ entrada a atacar, y `--help` / `--version`.
 
 ## Cómo funciona
 
-- **WinZip AES (AE-1/AE-2)**: derivación de clave PBKDF2-HMAC-SHA1 (1000
-  iteraciones). ganzua descarta contraseñas erróneas comparando el verificador
+- **WinZip AES (AE-1/AE-2), 128/192/256 bits**: derivación de clave
+  PBKDF2-HMAC-SHA1 (1000 iteraciones). ganzua descarta contraseñas erróneas
+  comparando el verificador
   de 2 bytes (rechazo en microsegundos) y confirma la correcta con el código de
   autenticación HMAC-SHA1 de 10 bytes — sin necesidad de descifrar todo el
   contenido. Cero falsos positivos.
