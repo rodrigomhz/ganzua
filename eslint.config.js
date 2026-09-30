@@ -26,7 +26,7 @@ const nodeGlobals = {
 };
 
 module.exports = [
-  { ignores: ['node_modules/', 'test/fixtures/out/', 'coverage/'] },
+  { ignores: ['node_modules/', 'test/fixtures/out/', 'coverage/', 'build/'] },
   js.configs.recommended,
   {
     languageOptions: {

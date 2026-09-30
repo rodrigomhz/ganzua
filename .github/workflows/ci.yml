@@ -38,6 +38,29 @@ jobs:
       - name: Test
         run: npm test
 
+  native:
+    runs-on: ubuntu-latest
+    name: addon nativo (C++ N-API)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: pip install pyzipper
+      - run: npm ci
+      # Compila el addon C++ (Biham-Kocher). node-gyp usa el toolchain
+      # preinstalado en los runners de ubuntu (gcc/make/python).
+      - name: Build native addon
+        run: npm run build:native
+      # Con el addon compilado, `lib/native` reporta available=true y la suite
+      # ejercita el e2e nativo (test/native.test.js) además del motor JS.
+      - name: Test (incluye addon nativo)
+        run: npm test
+
   lint:
     runs-on: ubuntu-latest
     steps:

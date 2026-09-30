@@ -2,5 +2,7 @@ node_modules/
 # Fixtures cifrados regenerados por `npm run pretest` (no versionar binarios).
 test/fixtures/out/
 coverage/
+# Addon N-API compilado (se genera con `npm run build:native`).
+build/
 *.log
 .DS_Store

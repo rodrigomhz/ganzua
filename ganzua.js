@@ -23,6 +23,7 @@ const bkcrack = require('./lib/bkcrack');
 const aesCrypto = require('./lib/crypto-aes');
 const zipcrypto = require('./lib/crypto-zipcrypto');
 const { recoverKeysParallel } = require('./lib/zipcrypto-attack-parallel');
+const native = require('./lib/native');
 const { extractEntries } = require('./lib/extract');
 const formato = require('./lib/format');
 
@@ -62,6 +63,7 @@ function parseArgs(argv) {
     else if (a === '--cp437' || a === '--oem') opts.cp437 = true;
     else if (a === '--hashcat') opts.hashcat = true;
     else if (a === '--bkcrack') opts.bkcrack = true;
+    else if (a === '--js') opts.js = true;
     else if (a === '--todas' || a === '--all') opts.todas = true;
     else if (a === '--help' || a === '-h') opts.help = true;
     else if (a === '--version' || a === '-v') opts.version = true;
@@ -631,24 +633,37 @@ async function cmdTextoPlano(positionals, opts) {
       hex: opts['plano-hex'],
     });
   } else {
-    // Ataque nativo Biham-Kocher (paralelo).
-    if (!opts.json) note(`ganzua · ataque de texto plano nativo (Biham-Kocher) sobre "${entry.name}"…`);
     const ciphertext = Buffer.concat([entry.crypto.header, entry.crypto.body]);
-    const workers = opts.hilos ? Number(opts.hilos) : undefined;
-    try {
-      keys = await recoverKeysParallel(ciphertext, plaintext, offsetArg, {
-        workers,
-        onZreduce:
-          opts.json || !isTTY
-            ? undefined
-            : (d, t) => process.stderr.write(`\r  reduciendo Z… ${((d / t) * 100).toFixed(0)}%   `),
-        onProgress:
-          opts.json || !isTTY ? undefined : (d, t) => process.stderr.write(`\r  probando ${d}/${t} valores Z…      `),
-      });
-    } catch (err) {
-      fail(`fallo en el ataque: ${err.message}`);
+    // Motor: addon C++ (Biham-Kocher, N-API) si está compilado y no se fuerza
+    // JS con --js; en su defecto, el motor JS paralelo (worker_threads).
+    const useNative = native.available && !opts.js;
+    if (useNative) {
+      if (!opts.json) note(`ganzua · ataque de texto plano nativo C++ (Biham-Kocher) sobre "${entry.name}"…`);
+      const jobs = opts.hilos ? Number(opts.hilos) : 0;
+      try {
+        keys = native.attack(ciphertext, plaintext, offsetArg, jobs);
+      } catch (err) {
+        fail(`fallo en el ataque nativo: ${err.message}`);
+      }
+    } else {
+      // Motor JS paralelo (fallback si el addon no está compilado o con --js).
+      if (!opts.json) note(`ganzua · ataque de texto plano JS (Biham-Kocher) sobre "${entry.name}"…`);
+      const workers = opts.hilos ? Number(opts.hilos) : undefined;
+      try {
+        keys = await recoverKeysParallel(ciphertext, plaintext, offsetArg, {
+          workers,
+          onZreduce:
+            opts.json || !isTTY
+              ? undefined
+              : (d, t) => process.stderr.write(`\r  reduciendo Z… ${((d / t) * 100).toFixed(0)}%   `),
+          onProgress:
+            opts.json || !isTTY ? undefined : (d, t) => process.stderr.write(`\r  probando ${d}/${t} valores Z…      `),
+        });
+      } catch (err) {
+        fail(`fallo en el ataque: ${err.message}`);
+      }
+      if (isTTY && !opts.json) process.stderr.write('\r' + ' '.repeat(48) + '\r');
     }
-    if (isTTY && !opts.json) process.stderr.write('\r' + ' '.repeat(48) + '\r');
   }
   if (!keys) {
     fail('no se recuperaron las claves (¿texto plano correcto y suficiente? ≥12 bytes, 8 contiguos)');
@@ -901,8 +916,10 @@ OBTENER EL CONTENIDO
                              DEFLATE).
       --plano-hex <hex> [--offset N]   Texto plano como hex a un offset.
       --hilos <N>            Nº de hilos del ataque.
+      --js                   Fuerza el motor JS (por defecto usa el addon C++
+                             si está compilado: npm run build:native).
       --bkcrack              Usa bkcrack (si está en el PATH) en vez del motor
-                             nativo.
+                             propio.
 
 COMANDOS DE APOYO
   formato  <archivo>         Identifica el formato (ZIP/7z/RAR/…) y cómo atacarlo.

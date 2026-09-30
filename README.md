@@ -57,9 +57,9 @@ rompe ZIP reales y recupera los ficheros idénticos al original.
 El cifrado clásico **ZipCrypto está roto**: con ~12 bytes de texto plano conocido
 (8 contiguos) de una entrada se recuperan las claves internas y se descifra
 **todo el archivo, sea cual sea la longitud de la contraseña**. ganzua incluye
-una **implementación nativa del ataque de Biham-Kocher** (port del algoritmo de
-[`bkcrack`](https://github.com/kimci86/bkcrack)), paralelizada con
-`worker_threads` — no necesita ninguna herramienta externa:
+una **implementación propia del ataque de Biham-Kocher** (port del algoritmo de
+[`bkcrack`](https://github.com/kimci86/bkcrack)) — no necesita ninguna
+herramienta externa:
 
 ```bash
 # Conoces parte del contenido de una entrada (STORE: el contenido; DEFLATE: los
@@ -70,9 +70,18 @@ node ganzua.js textoplano archivo.zip --entrada 0 --plano cabecera_conocida.bin 
 node ganzua.js extrae archivo.zip --claves 12345678:9abcdef0:0f1e2d3c --salida ./out
 ```
 
-Con `--bkcrack` delega en `bkcrack` (si está en el `PATH`) en vez del motor
-nativo. Cuanto más texto plano conocido (de alta entropía) proporciones, más
-rápido converge el ataque.
+**Motores del ataque.** Por defecto se usa el motor JS (paralelizado con
+`worker_threads`). Si compilas el **addon nativo en C++** (N-API), el ataque se
+acelera varias veces y se usa automáticamente:
+
+```bash
+npm run build:native   # compila el addon C++ (requiere compilador + node-gyp)
+```
+
+El addon es **opcional**: si no está compilado, ganzua sigue funcionando con el
+motor JS. Con `--js` fuerzas el motor JS aunque el addon esté disponible, y con
+`--bkcrack` delegas en `bkcrack` (si está en el `PATH`). Cuanto más texto plano
+conocido (de alta entropía) proporciones, más rápido converge el ataque.
 
 Cuando no la encuentra con los valores por defecto:
 
@@ -271,11 +280,15 @@ máscara se pasa tal cual. También puedes generar el hash y usar hashcat a mano
   [`pyzipper`](https://pypi.org/project/pyzipper/) y el comando `zip` del
   sistema.
 - `hashcat` es opcional, solo para acelerar por GPU con la salida de `material`.
+- El **addon nativo en C++** (acelera el ataque de texto plano ZipCrypto) es
+  opcional: para compilarlo hacen falta un compilador de C++ y `node-gyp`
+  (`npm run build:native`). Sin él, ganzua usa el motor JS.
 
 ## Desarrollo y tests
 
 ```bash
-npm test
+npm test                 # motor JS
+npm run build:native && npm test   # además, ejercita el addon C++ (e2e nativo)
 ```
 
 `pretest` regenera los fixtures cifrados con `pyzipper` y el `zip` del sistema.
