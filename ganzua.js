@@ -9,6 +9,7 @@
 // Comandos de apoyo:  analiza · material · verifica · busca
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const { readZip, firstEncryptedEntry, ZipError } = require('./lib/zip');
@@ -17,6 +18,7 @@ const { searchAsync } = require('./lib/search');
 const { searchParallel, defaultWorkers } = require('./lib/search-parallel');
 const candidates = require('./lib/candidates');
 const checkpoint = require('./lib/checkpoint');
+const hashcat = require('./lib/hashcat');
 const aesCrypto = require('./lib/crypto-aes');
 
 // Below this many candidates the worker-pool overhead is not worth it.
@@ -46,6 +48,7 @@ function parseArgs(argv) {
     if (a === '--json') opts.json = true;
     else if (a === '--agresivo' || a === '--aggressive') opts.agresivo = true;
     else if (a === '--secuencial' || a === '--sequential') opts.secuencial = true;
+    else if (a === '--hashcat') opts.hashcat = true;
     else if (a === '--todas' || a === '--all') opts.todas = true;
     else if (a === '--help' || a === '-h') opts.help = true;
     else if (a === '--version' || a === '-v') opts.version = true;
@@ -323,12 +326,119 @@ async function runSearch(zip, entry, opts) {
 // Commands
 // ---------------------------------------------------------------------------
 
+// Materializa el flujo de candidatas (no-máscara) a un fichero de diccionario
+// para pasárselo a hashcat en modo -a 0. Se limita para no crear ficheros
+// gigantescos con --agresivo o wordlists enormes.
+function materializeWordlist(opts, cap = 2_000_000) {
+  const { stream } = buildCandidateStream(opts);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ganzua-wl-'));
+  const file = path.join(dir, 'words.txt');
+  const fd = fs.openSync(file, 'w');
+  let count = 0;
+  let truncated = false;
+  let buf = '';
+  for (const c of stream) {
+    buf += c + '\n';
+    count++;
+    if (buf.length >= 1 << 16) {
+      fs.writeSync(fd, buf);
+      buf = '';
+    }
+    if (count >= cap) {
+      truncated = true;
+      break;
+    }
+  }
+  if (buf) fs.writeSync(fd, buf);
+  fs.closeSync(fd);
+  return { file, dir, count, truncated };
+}
+
+// Delega en hashcat (modo 13600) para una entrada AES.
+async function runHashcat(zip, entry, opts) {
+  const hash = buildZip2Hash(entry);
+  let attack;
+  let source;
+  let info;
+  let cleanup = () => {};
+  if (opts.mascara) {
+    attack = 'mask';
+    source = opts.mascara; // la sintaxis de máscara de ganzua es la de hashcat
+    info = `máscara "${opts.mascara}"`;
+  } else {
+    const mat = materializeWordlist(opts);
+    attack = 'wordlist';
+    source = mat.file;
+    cleanup = () => fs.rmSync(mat.dir, { recursive: true, force: true });
+    info = `diccionario de ${mat.count} candidatas${mat.truncated ? ' (truncado)' : ''}`;
+  }
+
+  if (!opts.json) {
+    note(`ganzua · rompiendo ${path.basename(zip.path)} con hashcat -m 13600`);
+    note(`  cifrado: ${describeEncryption(entry)} — entrada "${entry.name}"`);
+    note(`  ${info}…`);
+  }
+
+  const started = Date.now();
+  let result;
+  try {
+    result = hashcat.run({ hash, attack, source });
+  } finally {
+    cleanup();
+  }
+  const elapsedMs = Date.now() - started;
+  const secs = (elapsedMs / 1000).toFixed(1);
+
+  if (opts.json) {
+    const abre = result.found
+      ? encryptedEntries(zip)
+          .filter((e) => verify(e, result.password))
+          .map((e) => ({ indice: e.index, nombre: e.name }))
+      : [];
+    emitJson({
+      archivo: zip.path,
+      entrada: { indice: entry.index, nombre: entry.name },
+      motor: 'hashcat',
+      cifrado: describeEncryption(entry),
+      encontrada: result.found,
+      contrasena: result.password,
+      ms: elapsedMs,
+      abre,
+    });
+    return result.found ? 0 : 1;
+  }
+
+  if (result.found) {
+    out('');
+    out(`  ✔ CONTRASEÑA ENCONTRADA (hashcat): «${result.password}»`);
+    out(`    (${secs} s)`);
+    return 0;
+  }
+  note('');
+  note(`  ✗ hashcat no encontró la contraseña (${secs} s)`);
+  return 1;
+}
+
+// Elige motor: hashcat (si se pide y está disponible para AES) o el propio.
+async function crack(zip, entry, opts) {
+  if (opts.hashcat) {
+    if (entry.encryption !== 'aes') {
+      note('  hashcat (modo 13600) solo cubre AES; usando el motor propio');
+    } else if (!hashcat.isAvailable()) {
+      note('  hashcat no está en el PATH; usando el motor propio');
+    } else {
+      return runHashcat(zip, entry, opts);
+    }
+  }
+  return runSearch(zip, entry, opts);
+}
+
 async function cmdRomper(positionals, opts) {
   const [file] = positionals;
   if (!file) fail('uso: ganzua romper <archivo.zip> [--wordlist f] [--patron p] [--agresivo] [--json]');
   const zip = openZip(file);
   const entry = resolveEntry(zip, opts);
-  return runSearch(zip, entry, opts);
+  return crack(zip, entry, opts);
 }
 
 // `busca` is the lower-level form of `romper`: same engine, but it requires you
@@ -343,7 +453,7 @@ async function cmdBusca(positionals, opts) {
   }
   const zip = openZip(file);
   const entry = resolveEntry(zip, opts);
-  return runSearch(zip, entry, opts);
+  return crack(zip, entry, opts);
 }
 
 function cmdAnaliza(positionals, opts) {
@@ -517,6 +627,8 @@ COMANDO PRINCIPAL
       --agresivo             Amplía años y sufijos automáticamente.
       --hilos <N>            Nº de hilos (AES). Por defecto: nº de CPUs.
       --secuencial           Fuerza búsqueda en un solo hilo.
+      --hashcat              Usa hashcat (modo 13600) si está en el PATH; si no,
+                             recurre al motor propio.
       --checkpoint <fichero> Guarda el progreso y reanuda desde él (búsquedas
                              largas). Ctrl+C guarda y sale con un resumen.
       --json                 Salida JSON.

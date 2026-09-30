@@ -143,6 +143,24 @@ test('romper --mascara encuentra la contraseña por máscara', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('busca acepta --json y una wordlist', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const wl = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'gz-wl-')), 'wl.txt');
+  fs.writeFileSync(wl, 'password123\n');
+  const { status, stdout } = runCli(['busca', '--json', fixturePath('aes256-romper.zip'), wl]);
+  const j = JSON.parse(stdout);
+  assert.strictEqual(status, 0);
+  assert.strictEqual(j.encontrada, true);
+  assert.strictEqual(j.contrasena, 'password123');
+});
+
+test('flags cortos -v y -h', () => {
+  assert.match(runCli(['-v']).stdout, /^ganzua \d+\.\d+\.\d+/);
+  assert.match(runCli(['-h']).stdout, /COMANDO PRINCIPAL/);
+});
+
 test('comando desconocido falla con ayuda', () => {
   const { status, stderr } = runCli(['inventado']);
   assert.notStrictEqual(status, 0);

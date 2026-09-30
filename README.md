@@ -163,6 +163,20 @@ CPU). `romper` y `busca` **paralelizan con `worker_threads`** por defecto: usan
 tantos hilos como CPUs y escalan casi linealmente (≈3× en 4 núcleos). Ajusta
 con `--hilos N` o desactiva con `--secuencial`.
 
+### hashcat (GPU)
+
+Para ir más rápido con GPU, `--hashcat` delega en hashcat (modo 13600) si está
+en el `PATH`, y si no, recurre automáticamente al motor propio:
+
+```bash
+node ganzua.js romper archivo.zip --hashcat                 # diccionario+patrones
+node ganzua.js romper archivo.zip --hashcat --mascara "Casa?d?d?d?d"
+```
+
+La sintaxis de `--mascara` de ganzua es la misma que la de hashcat, así que la
+máscara se pasa tal cual. También puedes generar el hash y usar hashcat a mano:
+`ganzua material archivo.zip > hash.txt && hashcat -m 13600 hash.txt rockyou.txt`.
+
 ## Requisitos
 
 - Node.js 18+ (sin dependencias de terceros en tiempo de ejecución).
