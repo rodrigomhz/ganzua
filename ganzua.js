@@ -23,9 +23,12 @@ const bkcrack = require('./lib/bkcrack');
 const aesCrypto = require('./lib/crypto-aes');
 const zipcrypto = require('./lib/crypto-zipcrypto');
 const { recoverKeysParallel } = require('./lib/zipcrypto-attack-parallel');
+const { ATTACK_SIZE } = require('./lib/zipcrypto-attack');
 const native = require('./lib/native');
 const { extractEntries } = require('./lib/extract');
 const loot = require('./lib/loot');
+const knownPlain = require('./lib/known-plaintext');
+const deflatePlain = require('./lib/deflate-plain');
 const formato = require('./lib/format');
 
 // Below this many candidates the worker-pool overhead is not worth it.
@@ -52,6 +55,7 @@ const FLAGS_WITH_VALUE = new Set([
   '--offset',
   '--charset',
   '--maxbytes',
+  '--conocido',
 ]);
 
 function parseArgs(argv) {
@@ -69,6 +73,7 @@ function parseArgs(argv) {
     else if (a === '--js') opts.js = true;
     else if (a === '--todas' || a === '--all') opts.todas = true;
     else if (a === '--listar' || a === '--list') opts.listar = true;
+    else if (a === '--auto') opts.auto = true;
     else if (a === '--help' || a === '-h') opts.help = true;
     else if (a === '--version' || a === '-v') opts.version = true;
     else if (FLAGS_WITH_VALUE.has(a)) {
@@ -594,14 +599,45 @@ async function cmdExtrae(positionals, opts) {
   return results.every((r) => r.ok) ? 0 : 1;
 }
 
-// `textoplano` — ataque de texto plano conocido contra ZipCrypto (Biham-Kocher)
-// vía bkcrack: recupera las claves internas y descifra/extrae todo el archivo
-// sin la contraseña, independientemente de su longitud.
+// Ejecuta UN candidato de texto plano con el motor elegido; claves o null.
+// Puede lanzar (texto plano inválido/corto): el llamador lo trata como fallo
+// de ese candidato y pasa al siguiente.
+async function runPlainEngine(engine, { file, entry, ciphertext, cand, opts }) {
+  if (engine === 'bkcrack') {
+    const spec = { zip: file, entry: entry.name };
+    if (cand.file && cand.offset === 0) spec.plainFile = cand.file;
+    else {
+      spec.offset = cand.offset;
+      spec.hex = Buffer.from(cand.plano).toString('hex');
+    }
+    return bkcrack.run(spec);
+  }
+  if (engine === 'nativo C++') {
+    return native.attack(ciphertext, cand.plano, cand.offset, opts.hilos ? Number(opts.hilos) : 0);
+  }
+  // Motor JS paralelo.
+  return recoverKeysParallel(ciphertext, cand.plano, cand.offset, {
+    workers: opts.hilos ? Number(opts.hilos) : undefined,
+    onZreduce:
+      opts.json || !isTTY
+        ? undefined
+        : (d, t) => process.stderr.write(`\r  reduciendo Z… ${((d / t) * 100).toFixed(0)}%   `),
+    onProgress:
+      opts.json || !isTTY ? undefined : (d, t) => process.stderr.write(`\r  probando ${d}/${t} valores Z…      `),
+  });
+}
+
+// `textoplano` — ataque de texto plano conocido contra ZipCrypto (Biham-Kocher).
+// Recupera las claves internas y descifra/extrae todo el archivo sin la
+// contraseña, sea cual sea su longitud. El texto plano puede darse a mano
+// (--plano/--plano-hex), deducirse del tipo de fichero (--auto, cabeceras
+// conocidas para entradas STORE) o derivarse de una copia del contenido
+// (--conocido, que recomprime si la entrada es DEFLATE).
 async function cmdTextoPlano(positionals, opts) {
   const [file] = positionals;
   if (!file) {
     fail(
-      'uso: ganzua textoplano <archivo.zip> [--entrada N] (--plano <fichero> | --plano-hex <hex> [--offset N]) [--salida dir]',
+      'uso: ganzua textoplano <archivo.zip> [--entrada N] (--auto | --conocido <fichero> | --plano <fichero> | --plano-hex <hex> [--offset N]) [--salida dir]',
     );
   }
   const zip = openZip(file);
@@ -609,68 +645,89 @@ async function cmdTextoPlano(positionals, opts) {
   if (entry.encryption !== 'zipcrypto') {
     fail(`textoplano ataca ZipCrypto por texto plano conocido; "${entry.name}" es ${entry.encryption}`);
   }
-  if (!opts.plano && !opts['plano-hex']) {
-    fail('indica el texto plano conocido: --plano <fichero> o --plano-hex <hex> [--offset N] (≥12 bytes, 8 contiguos)');
+
+  // Construir la lista ordenada de candidatos de texto plano del flujo cifrado.
+  const offsetArg = opts.offset !== undefined ? Number(opts.offset) : 0;
+  const PLAIN_CAP = 4096; // recorte para candidatos automáticos (más que suficiente)
+  let candidatos = [];
+  let modoFuente;
+  if (opts.auto) {
+    modoFuente = 'auto';
+    candidatos = knownPlain.candidatesForEntry(entry);
+    if (candidatos.length === 0) {
+      const extra =
+        entry.method !== 0
+          ? 'Las cabeceras en claro solo aplican a entradas STORE; para DEFLATE usa --conocido <fichero>.'
+          : `Extensiones cubiertas: ${knownPlain.coveredExtensions().join(', ')}. Si no, usa --conocido o --plano.`;
+      fail(`--auto no tiene firmas para "${entry.name}" (${methodName(entry.method)}). ${extra}`);
+    }
+  } else if (opts.conocido) {
+    modoFuente = 'conocido';
+    let known;
+    try {
+      known = fs.readFileSync(opts.conocido);
+    } catch (err) {
+      fail(`no se pudo leer --conocido: ${err.message}`);
+    }
+    try {
+      candidatos = deflatePlain.candidatesFromKnown(known, entry);
+    } catch (err) {
+      fail(err.message);
+    }
+  } else if (opts.plano || opts['plano-hex']) {
+    modoFuente = 'manual';
+    let plano;
+    if (opts.plano) plano = fs.readFileSync(opts.plano);
+    else {
+      const hex = opts['plano-hex'].replace(/\s+/g, '');
+      if (!/^[0-9a-fA-F]*$/.test(hex) || hex.length % 2 !== 0) fail('--plano-hex debe ser hex par');
+      plano = Buffer.from(hex, 'hex');
+    }
+    candidatos = [{ etiqueta: 'texto plano indicado', offset: offsetArg, plano, file: opts.plano }];
+  } else {
+    fail('indica el texto plano: --auto | --conocido <fichero> | --plano <fichero> | --plano-hex <hex> [--offset N]');
   }
 
-  // Texto plano conocido (del flujo cifrado: contenido para STORE, bytes
-  // comprimidos para DEFLATE) y su offset dentro del cuerpo.
-  let plaintext;
-  if (opts.plano) plaintext = fs.readFileSync(opts.plano);
-  else {
-    const hex = opts['plano-hex'].replace(/\s+/g, '');
-    if (!/^[0-9a-fA-F]*$/.test(hex) || hex.length % 2 !== 0) fail('--plano-hex debe ser hex par');
-    plaintext = Buffer.from(hex, 'hex');
+  // Los candidatos automáticos se acotan; los manuales se usan tal cual.
+  if (modoFuente !== 'manual') {
+    candidatos = candidatos.map((c) => ({ ...c, plano: c.plano.subarray(0, PLAIN_CAP) }));
   }
-  const offsetArg = opts.offset !== undefined ? Number(opts.offset) : 0;
+  candidatos = candidatos.filter((c) => c.plano.length >= ATTACK_SIZE);
+  if (candidatos.length === 0) fail(`ningún candidato alcanza los ${ATTACK_SIZE} bytes mínimos del ataque`);
+
+  const ciphertext = Buffer.concat([entry.crypto.header, entry.crypto.body]);
+  const engine = opts.bkcrack ? 'bkcrack' : native.available && !opts.js ? 'nativo C++' : 'JS';
+  if (opts.bkcrack && !bkcrack.isAvailable()) fail('bkcrack no está en el PATH (https://github.com/kimci86/bkcrack)');
+  if (!opts.json) {
+    note(`ganzua · ataque de texto plano (${engine}) sobre "${entry.name}" — ${candidatos.length} candidato(s)…`);
+  }
 
   const started = Date.now();
-  let keys;
-  if (opts.bkcrack) {
-    if (!bkcrack.isAvailable()) fail('bkcrack no está en el PATH (https://github.com/kimci86/bkcrack)');
-    if (!opts.json) note(`ganzua · ataque de texto plano (bkcrack) sobre "${entry.name}"…`);
-    keys = bkcrack.run({
-      zip: file,
-      entry: entry.name,
-      plainFile: opts.plano,
-      offset: offsetArg,
-      hex: opts['plano-hex'],
-    });
-  } else {
-    const ciphertext = Buffer.concat([entry.crypto.header, entry.crypto.body]);
-    // Motor: addon C++ (Biham-Kocher, N-API) si está compilado y no se fuerza
-    // JS con --js; en su defecto, el motor JS paralelo (worker_threads).
-    const useNative = native.available && !opts.js;
-    if (useNative) {
-      if (!opts.json) note(`ganzua · ataque de texto plano nativo C++ (Biham-Kocher) sobre "${entry.name}"…`);
-      const jobs = opts.hilos ? Number(opts.hilos) : 0;
-      try {
-        keys = native.attack(ciphertext, plaintext, offsetArg, jobs);
-      } catch (err) {
-        fail(`fallo en el ataque nativo: ${err.message}`);
-      }
-    } else {
-      // Motor JS paralelo (fallback si el addon no está compilado o con --js).
-      if (!opts.json) note(`ganzua · ataque de texto plano JS (Biham-Kocher) sobre "${entry.name}"…`);
-      const workers = opts.hilos ? Number(opts.hilos) : undefined;
-      try {
-        keys = await recoverKeysParallel(ciphertext, plaintext, offsetArg, {
-          workers,
-          onZreduce:
-            opts.json || !isTTY
-              ? undefined
-              : (d, t) => process.stderr.write(`\r  reduciendo Z… ${((d / t) * 100).toFixed(0)}%   `),
-          onProgress:
-            opts.json || !isTTY ? undefined : (d, t) => process.stderr.write(`\r  probando ${d}/${t} valores Z…      `),
-        });
-      } catch (err) {
-        fail(`fallo en el ataque: ${err.message}`);
-      }
-      if (isTTY && !opts.json) process.stderr.write('\r' + ' '.repeat(48) + '\r');
+  let keys = null;
+  let usado = null;
+  for (let i = 0; i < candidatos.length; i++) {
+    const c = candidatos[i];
+    if (!opts.json && candidatos.length > 1) {
+      note(`  · candidato ${i + 1}/${candidatos.length}: ${c.etiqueta} (${c.plano.length} B @ offset ${c.offset})`);
+    }
+    try {
+      keys = await runPlainEngine(engine, { file, entry, ciphertext, cand: c, opts });
+    } catch (err) {
+      if (!opts.json) note(`    (candidato descartado: ${err.message})`);
+      keys = null;
+    }
+    if (keys) {
+      usado = c;
+      break;
     }
   }
+  if (isTTY && !opts.json) process.stderr.write('\r' + ' '.repeat(48) + '\r');
   if (!keys) {
-    fail('no se recuperaron las claves (¿texto plano correcto y suficiente? ≥12 bytes, 8 contiguos)');
+    const pista =
+      modoFuente === 'auto'
+        ? 'Prueba --conocido <fichero> con una copia del contenido, o confirma que la entrada es STORE.'
+        : 'Comprueba el texto plano (≥12 bytes, 8 contiguos) y, en DEFLATE, que casa con la compresión usada.';
+    fail(`no se recuperaron las claves tras ${candidatos.length} candidato(s). ${pista}`);
   }
 
   const secs = ((Date.now() - started) / 1000).toFixed(1);
@@ -682,9 +739,18 @@ async function cmdTextoPlano(positionals, opts) {
   const clavesHex = keys.map((k) => k.toString(16).padStart(8, '0'));
 
   if (opts.json) {
-    emitJson({ archivo: zip.path, claves: clavesHex, salida: outDir, extraidas: okCount, entradas: results });
+    emitJson({
+      archivo: zip.path,
+      motor: engine,
+      candidato: usado.etiqueta,
+      claves: clavesHex,
+      salida: outDir,
+      extraidas: okCount,
+      entradas: results,
+    });
     return results.every((r) => r.ok) ? 0 : 1;
   }
+  out(`  ✔ texto plano: ${usado.etiqueta}`);
   out(`  ✔ claves ZipCrypto: ${clavesHex.join(' ')}  (${secs} s)`);
   for (const r of results) {
     if (r.ok) out(`  ✔ ${r.nombre}${r.directorio ? '' : ` (${r.bytes} B)`}`);
@@ -1020,6 +1086,11 @@ OBTENER EL CONTENIDO
   textoplano <archivo.zip>   Ataque de texto plano conocido contra ZipCrypto
                              (Biham-Kocher NATIVO): recupera las claves y
                              descifra TODO sin la contraseña, sea cual sea.
+      --auto                 Deduce el texto plano por el tipo de fichero
+                             (cabeceras conocidas: OVF/OVA/VMDK/VDI/VHD/QCOW2,
+                             PNG, OOXML…). Solo para entradas STORE.
+      --conocido <fichero>   Usa una copia del contenido sin comprimir; si la
+                             entrada es DEFLATE lo recomprime a varios niveles.
       --plano <fichero>      Texto plano conocido (≥12 bytes, 8 contiguos) del
                              flujo cifrado (contenido en STORE; comprimido en
                              DEFLATE).

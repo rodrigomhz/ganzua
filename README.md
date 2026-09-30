@@ -70,6 +70,30 @@ node ganzua.js textoplano archivo.zip --entrada 0 --plano cabecera_conocida.bin 
 node ganzua.js extrae archivo.zip --claves 12345678:9abcdef0:0f1e2d3c --salida ./out
 ```
 
+**El texto plano puede deducirse solo.** No hace falta darlo a mano:
+
+```bash
+# --auto: lo deduce por el tipo de fichero (cabeceras conocidas). Ideal para
+# discos/appliances guardados SIN comprimir dentro del zip:
+node ganzua.js textoplano vm.zip --entrada 0 --auto --salida ./out
+
+# --conocido: tienes una copia del contenido SIN comprimir; si la entrada va en
+# DEFLATE, ganzua la recomprime a varios niveles y prueba cada uno:
+node ganzua.js textoplano archivo.zip --entrada 0 --conocido copia_del_fichero --salida ./out
+```
+
+`--auto` cubre cabeceras de **máquinas virtuales** (OVF/OVA, VMDK, VDI, VHD,
+QCOW2) y otros formatos (PNG, OOXML…). Solo aplica a entradas **STORE** (sin
+comprimir): ahí la cabecera en claro es texto plano del flujo cifrado. Como
+suele aportar pocos bytes (12–40), el ataque es más lento; si tienes una copia
+del contenido, `--conocido` da más texto plano y va más rápido.
+
+> **Sobre DEFLATE.** `--conocido` recomprime el contenido conocido para casar el
+> flujo comprimido, pero el deflate de cada herramienta (7-Zip, Info-ZIP) y hasta
+> de cada versión de zlib difiere byte a byte, así que solo funciona si el
+> archivo se creó con un deflate idéntico. Cuando no casa, usa una entrada STORE,
+> o aporta los bytes comprimidos exactos con `--plano`.
+
 **Motores del ataque.** Por defecto se usa el motor JS (paralelizado con
 `worker_threads`). Si compilas el **addon nativo en C++** (N-API), el ataque se
 acelera varias veces y se usa automáticamente:
