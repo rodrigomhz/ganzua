@@ -9,13 +9,18 @@
 // Comandos de apoyo:  analiza · material · verifica · busca
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const { readZip, firstEncryptedEntry, ZipError } = require('./lib/zip');
 const { verify, decrypt } = require('./lib/verify');
 const { search } = require('./lib/search');
+const { searchParallel, defaultWorkers } = require('./lib/search-parallel');
 const candidates = require('./lib/candidates');
 const aesCrypto = require('./lib/crypto-aes');
+
+// Below this many candidates the worker-pool overhead is not worth it.
+const PARALLEL_THRESHOLD = 4000;
 
 const VERSION = require('./package.json').version;
 
@@ -23,15 +28,16 @@ const VERSION = require('./package.json').version;
 // Minimal argument parsing
 // ---------------------------------------------------------------------------
 
-const FLAGS_WITH_VALUE = new Set(['--wordlist', '--patron', '--limite', '--entrada']);
+const FLAGS_WITH_VALUE = new Set(['--wordlist', '--patron', '--limite', '--entrada', '--hilos']);
 
 function parseArgs(argv) {
   const positionals = [];
-  const opts = { json: false, agresivo: false, todas: false };
+  const opts = { json: false, agresivo: false, todas: false, secuencial: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') opts.json = true;
     else if (a === '--agresivo' || a === '--aggressive') opts.agresivo = true;
+    else if (a === '--secuencial' || a === '--sequential') opts.secuencial = true;
     else if (a === '--todas' || a === '--all') opts.todas = true;
     else if (a === '--help' || a === '-h') opts.help = true;
     else if (a === '--version' || a === '-v') opts.version = true;
@@ -149,20 +155,34 @@ function progressReporter(total) {
   };
 }
 
-function runSearch(zip, entry, opts) {
+// Decide how many worker threads to use (0 => run single-threaded).
+function planWorkers(entry, total, opts) {
+  if (entry.encryption !== 'aes') return 0; // only AES/PBKDF2 benefits
+  if (opts.secuencial) return 0;
+  const requested = opts.hilos !== undefined ? Number(opts.hilos) : defaultWorkers();
+  if (!Number.isFinite(requested) || requested <= 1) return 0;
+  // Skip the pool for small, quick searches where its overhead dominates.
+  if (total !== null && total < PARALLEL_THRESHOLD) return 0;
+  return requested;
+}
+
+async function runSearch(zip, entry, opts) {
   const { stream, total, label } = buildCandidateStream(opts);
   const limit = opts.limite ? Number(opts.limite) : undefined;
+  const workers = planWorkers(entry, total, opts);
 
   if (!opts.json) {
     note(`ganzua · rompiendo ${path.basename(zip.path)}`);
     note(`  cifrado: ${describeEncryption(entry)} — entrada "${entry.name}"`);
-    note(`  probando ${label}${total ? ` (~${total} candidatas)` : ''}…`);
+    const paralelo = workers > 0 ? ` · ${workers} hilos` : '';
+    note(`  probando ${label}${total ? ` (~${total} candidatas)` : ''}${paralelo}…`);
   }
 
-  const result = search(entry, stream, {
-    onProgress: opts.json ? undefined : progressReporter(total),
-    limit,
-  });
+  const onProgress = opts.json ? undefined : progressReporter(total);
+  const result =
+    workers > 0
+      ? await searchParallel(entry, stream, { workers, onProgress, limit })
+      : search(entry, stream, { onProgress, limit });
 
   if (isTTY && !opts.json) process.stderr.write('\r' + ' '.repeat(48) + '\r');
 
@@ -205,7 +225,7 @@ function runSearch(zip, entry, opts) {
 // Commands
 // ---------------------------------------------------------------------------
 
-function cmdRomper(positionals, opts) {
+async function cmdRomper(positionals, opts) {
   const [file] = positionals;
   if (!file) fail('uso: ganzua romper <archivo.zip> [--wordlist f] [--patron p] [--agresivo] [--json]');
   const zip = openZip(file);
@@ -216,7 +236,7 @@ function cmdRomper(positionals, opts) {
 // `busca` is the lower-level form of `romper`: same engine, but it requires you
 // to name a source (a wordlist file or a --patron) rather than defaulting to
 // the bundled list.
-function cmdBusca(positionals, opts) {
+async function cmdBusca(positionals, opts) {
   const [file, maybeWordlist] = positionals;
   if (!file) fail('uso: ganzua busca <archivo.zip> [wordlist.txt | --patron "..."] [--agresivo] [--json]');
   if (maybeWordlist && !opts.wordlist && !opts.patron) opts.wordlist = maybeWordlist;
@@ -366,6 +386,8 @@ COMANDO PRINCIPAL
       --wordlist <fichero>   Usa tu propia wordlist en vez de la incluida.
       --patron "<plantilla>" Genera candidatas desde una plantilla (ver abajo).
       --agresivo             Amplía años y sufijos automáticamente.
+      --hilos <N>            Nº de hilos (AES). Por defecto: nº de CPUs.
+      --secuencial           Fuerza búsqueda en un solo hilo.
       --json                 Salida JSON.
 
 COMANDOS DE APOYO
@@ -409,7 +431,7 @@ const COMMANDS = {
   verifica: cmdVerifica,
 };
 
-function main(argv) {
+async function main(argv) {
   const { positionals, opts } = parseArgs(argv);
   const command = positionals.shift();
 
@@ -428,7 +450,7 @@ function main(argv) {
   }
 
   try {
-    return handler(positionals, opts) || 0;
+    return (await handler(positionals, opts)) || 0;
   } catch (err) {
     if (err instanceof ZipError) fail(err.message);
     throw err;
@@ -436,7 +458,13 @@ function main(argv) {
 }
 
 if (require.main === module) {
-  process.exit(main(process.argv.slice(2)));
+  main(process.argv.slice(2)).then(
+    (code) => process.exit(code),
+    (err) => {
+      process.stderr.write(`ganzua: ${err && err.stack ? err.stack : err}\n`);
+      process.exit(1);
+    }
+  );
 }
 
 module.exports = { main, parseArgs, buildZip2Hash };

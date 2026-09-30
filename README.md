@@ -120,8 +120,10 @@ entrada a atacar, y `--help` / `--version`.
   como fuente autoritativa de tamaños y flags (fiable incluso con *data
   descriptor*).
 
-El cuello de botella en AES-256 es PBKDF2 (~1.3k intentos/s por hilo). La
-paralelización con `worker_threads` está en el backlog.
+El cuello de botella en AES-256 es PBKDF2 (~1k intentos/s por hilo, según la
+CPU). `romper` y `busca` **paralelizan con `worker_threads`** por defecto: usan
+tantos hilos como CPUs y escalan casi linealmente (≈3× en 4 núcleos). Ajusta
+con `--hilos N` o desactiva con `--secuencial`.
 
 ## Requisitos
 
