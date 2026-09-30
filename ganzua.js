@@ -56,6 +56,8 @@ function parseArgs(argv) {
     if (a === '--json') opts.json = true;
     else if (a === '--agresivo' || a === '--aggressive') opts.agresivo = true;
     else if (a === '--secuencial' || a === '--sequential') opts.secuencial = true;
+    else if (a === '--reglas' || a === '--rules') opts.reglas = true;
+    else if (a === '--cp437' || a === '--oem') opts.cp437 = true;
     else if (a === '--hashcat') opts.hashcat = true;
     else if (a === '--todas' || a === '--all') opts.todas = true;
     else if (a === '--help' || a === '-h') opts.help = true;
@@ -170,14 +172,13 @@ function buildCandidateStream(opts) {
       label: `patrón "${opts.patron}"`,
     };
   }
-  const total = candidates.estimateCount({ words, aggressive: opts.agresivo });
+  const total = candidates.estimateCount({ words, aggressive: opts.agresivo, rules: opts.reglas });
+  const extra = `${opts.agresivo ? ' (agresivo)' : ''}${opts.reglas ? ' + reglas' : ''}`;
   const label = opts.wordlist
-    ? `wordlist ${path.basename(opts.wordlist)}${opts.agresivo ? ' + patrones (agresivo)' : ' + patrones'}`
-    : opts.agresivo
-      ? 'wordlist común + patrones (agresivo)'
-      : 'wordlist común + patrones típicos';
+    ? `wordlist ${path.basename(opts.wordlist)} + patrones${extra}`
+    : `wordlist común + patrones típicos${extra}`;
   return {
-    stream: candidates.romperCandidates({ words, aggressive: opts.agresivo }),
+    stream: candidates.romperCandidates({ words, aggressive: opts.agresivo, rules: opts.reglas }),
     total,
     label,
   };
@@ -243,7 +244,8 @@ async function locatePassword(zip, entry, opts, { quiet = false } = {}) {
   process.on('SIGINT', onSigint);
 
   const onProgress = quiet || opts.json ? undefined : progressReporter(total);
-  const common = { onProgress, limit, startAt, signal: ac.signal, onCheckpoint };
+  const encoding = opts.cp437 ? 'cp437' : 'utf8';
+  const common = { onProgress, limit, startAt, signal: ac.signal, onCheckpoint, encoding };
   let result;
   try {
     result =
@@ -525,6 +527,7 @@ async function cmdExtrae(positionals, opts) {
   if (targets.length === 0) fail('el ZIP no tiene entradas');
 
   const encTargets = targets.filter((e) => e.encryption !== 'none');
+  const encoding = opts.cp437 ? 'cp437' : 'utf8';
 
   // Ruta por claves internas ZipCrypto (sin contraseña).
   let keys = null;
@@ -536,7 +539,7 @@ async function cmdExtrae(positionals, opts) {
   } else if (encTargets.length > 0) {
     // Contraseña: la del argumento (verificada) o recuperada por fuerza bruta.
     if (password) {
-      if (!verify(encTargets[0], password)) {
+      if (!verify(encTargets[0], password, { encoding })) {
         fail(`contraseña incorrecta para "${encTargets[0].name}"`);
       }
     } else {
@@ -552,7 +555,7 @@ async function cmdExtrae(positionals, opts) {
   }
 
   fs.mkdirSync(outDir, { recursive: true });
-  const results = extractEntries(zip, targets, { password, keys, outDir });
+  const results = extractEntries(zip, targets, { password, keys, outDir, encoding });
   const okCount = results.filter((r) => r.ok).length;
 
   if (opts.json) {
@@ -747,11 +750,12 @@ function cmdVerifica(positionals, opts) {
   const [file, password] = positionals;
   if (!file || password === undefined) fail('uso: ganzua verifica <archivo.zip> <candidata> [--json]');
   const zip = openZip(file);
+  const encoding = opts.cp437 ? 'cp437' : 'utf8';
 
   if (opts.todas) {
     const enc = encryptedEntries(zip);
     if (enc.length === 0) fail('el ZIP no contiene entradas cifradas');
-    const resultados = enc.map((e) => ({ indice: e.index, nombre: e.name, valida: verify(e, password) }));
+    const resultados = enc.map((e) => ({ indice: e.index, nombre: e.name, valida: verify(e, password, { encoding }) }));
     const todas = resultados.every((r) => r.valida);
     if (opts.json) {
       emitJson({ archivo: zip.path, candidata: password, valida_todas: todas, entradas: resultados });
@@ -762,7 +766,7 @@ function cmdVerifica(positionals, opts) {
   }
 
   const entry = resolveEntry(zip, opts);
-  const ok = verify(entry, password);
+  const ok = verify(entry, password, { encoding });
   if (opts.json) {
     emitJson({
       archivo: zip.path,
@@ -798,6 +802,10 @@ COMANDO PRINCIPAL
       --patron "<plantilla>" Genera candidatas desde una plantilla (ver abajo).
       --mascara "<máscara>"  Ataque por máscara estilo hashcat (ver abajo).
       --agresivo             Amplía años y sufijos automáticamente.
+      --reglas               Añade leet, MAYÚSCULAS, reverso y separadores
+                             (palabra_año, palabra-sufijo).
+      --cp437                Codifica las contraseñas en CP437/OEM (ZIP antiguos
+                             con acentos/ñ), en vez de UTF-8.
       --hilos <N>            Nº de hilos (AES). Por defecto: nº de CPUs.
       --secuencial           Fuerza búsqueda en un solo hilo.
       --hashcat              Usa hashcat (modo 13600) si está en el PATH; si no,

@@ -33,6 +33,33 @@ test('genera los patrones documentados (palabra+año, mayúscula+número, año+s
   assert.ok(set.has('2024!'), 'año+sufijo');
 });
 
+test('las reglas añaden leet, MAYÚSCULAS, reverso y separadores', () => {
+  const words = ['secreto', 'madrid'];
+  const set = new Set(collect(candidates.romperCandidates({ words, year: 2024, rules: true })));
+  assert.ok(set.has('SECRETO'), 'MAYÚSCULAS');
+  assert.ok(set.has('oterces'), 'reverso');
+  assert.ok(set.has('53cr370'), 'leet de secreto');
+  assert.ok(set.has('m4dr1d'), 'leet de madrid');
+  assert.ok(set.has('secreto_2024'), 'palabra_año');
+  assert.ok(set.has('Madrid-2024'), 'Mayúscula-año');
+  assert.ok(set.has('secreto.123'), 'palabra.sufijo');
+});
+
+test('sin --reglas no se emiten las mutaciones de reglas', () => {
+  const words = ['secreto'];
+  const set = new Set(collect(candidates.romperCandidates({ words, year: 2024 })));
+  assert.ok(!set.has('53cr370'));
+  assert.ok(!set.has('secreto_2024'));
+});
+
+test('estimateCount con reglas coincide con el recuento real (muestra)', () => {
+  const words = ['sol', 'mar', 'luz'];
+  const est = candidates.estimateCount({ words, year: 2024, rules: true });
+  const real = collect(candidates.romperCandidates({ words, year: 2024, rules: true })).length;
+  // La estimación de reglas es aproximada; comprobamos que está en el orden.
+  assert.ok(Math.abs(est - real) <= real * 0.1 + 5, `est=${est} real=${real}`);
+});
+
 test('el modo agresivo amplía el espacio de búsqueda', () => {
   const words = ['madrid'];
   const normal = candidates.estimateCount({ words, year: 2024 });

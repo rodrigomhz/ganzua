@@ -91,6 +91,27 @@ mano:
 node ganzua.js romper archivo.zip --agresivo
 ```
 
+### Reglas de mutación
+
+`--reglas` añade transformaciones tipo hashcat sobre cada palabra: **leet**
+(`secreto`→`53cr370`), **MAYÚSCULAS**, **reverso** y **separadores**
+(`palabra_2024`, `palabra-123`):
+
+```bash
+node ganzua.js romper archivo.zip --reglas            # combinable con --agresivo
+```
+
+### Contraseñas con acentos (ZIP antiguos, CP437)
+
+Los ZIP modernos usan UTF-8, pero los antiguos (Info-ZIP / Windows OEM) suelen
+codificar la contraseña en **CP437**. Si una contraseña con acentos o `ñ` no
+aparece, reintenta con `--cp437`:
+
+```bash
+node ganzua.js romper archivo.zip --cp437
+node ganzua.js verifica --cp437 archivo.zip "contraseña"
+```
+
 ### Tu propia wordlist
 
 ```bash

@@ -162,7 +162,17 @@ function writeManifest() {
   fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(entries, null, 2));
 }
 
+// Fixture con contraseña en CP437 (no va al manifest: no es UTF-8).
+function genCp437() {
+  const res = spawnSync('python3', [path.join(__dirname, 'gen_cp437.py'), outDir], { stdio: 'inherit' });
+  if (res.status !== 0) {
+    console.error('ganzua(fixtures): fallo generando el fixture CP437');
+    process.exit(res.status || 1);
+  }
+}
+
 genAes();
 genZipCrypto();
+genCp437();
 writeManifest();
 console.log(`ganzua(fixtures): ${aesSpecs.length + zcSpecs.length} fixtures en ${outDir}`);
