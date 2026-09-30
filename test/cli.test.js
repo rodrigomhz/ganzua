@@ -68,6 +68,60 @@ test('romper informa qué probar cuando falla', () => {
   assert.match(stderr, /--wordlist/);
 });
 
+test('analiza lista todas las entradas de un ZIP multi-entrada', () => {
+  const { status, stdout } = runCli(['analiza', '--json', fixturePath('aes256-multi.zip')]);
+  const j = JSON.parse(stdout);
+  assert.strictEqual(status, 0);
+  assert.strictEqual(j.entradas.length, 3);
+  assert.deepStrictEqual(
+    j.entradas.map((e) => e.nombre),
+    ['uno.txt', 'dos.txt', 'tres.txt']
+  );
+});
+
+test('verifica --todas exige que la clave abra todas las entradas', () => {
+  const ok = runCli(['verifica', '--todas', '--json', fixturePath('aes256-multi.zip'), 'Comun_2023']);
+  const j = JSON.parse(ok.stdout);
+  assert.strictEqual(ok.status, 0);
+  assert.strictEqual(j.valida_todas, true);
+  assert.strictEqual(j.entradas.length, 3);
+
+  const bad = runCli(['verifica', '--todas', fixturePath('aes256-multi.zip'), 'no']);
+  assert.strictEqual(bad.status, 1);
+});
+
+test('material --todas emite un hash por entrada AES', () => {
+  const { status, stdout } = runCli(['material', '--todas', fixturePath('aes256-multi.zip')]);
+  assert.strictEqual(status, 0);
+  const lines = stdout.trim().split('\n');
+  assert.strictEqual(lines.length, 3);
+  for (const l of lines) assert.match(l, /^\$zip2\$/);
+});
+
+test('--entrada N selecciona una entrada concreta', () => {
+  const { status, stdout } = runCli(['verifica', '--entrada', '2', '--json', fixturePath('aes256-multi.zip'), 'Comun_2023']);
+  const j = JSON.parse(stdout);
+  assert.strictEqual(status, 0);
+  assert.strictEqual(j.entrada.indice, 2);
+  assert.strictEqual(j.entrada.nombre, 'tres.txt');
+  assert.strictEqual(j.valida, true);
+});
+
+test('romper informa qué entradas abre la contraseña (campo abre)', () => {
+  // Ataca la entrada 0 con una wordlist que contiene la clave; debe reportar
+  // que abre las 3 entradas (misma contraseña).
+  const os = require('os');
+  const fs = require('fs');
+  const path = require('path');
+  const wl = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'gz-wl-')), 'wl.txt');
+  fs.writeFileSync(wl, 'Comun_2023\n');
+  const { status, stdout } = runCli(['romper', '--json', '--wordlist', wl, fixturePath('aes256-multi.zip')]);
+  const j = JSON.parse(stdout);
+  assert.strictEqual(status, 0);
+  assert.strictEqual(j.encontrada, true);
+  assert.strictEqual(j.abre.length, 3);
+});
+
 test('comando desconocido falla con ayuda', () => {
   const { status, stderr } = runCli(['inventado']);
   assert.notStrictEqual(status, 0);

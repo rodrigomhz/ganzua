@@ -104,7 +104,9 @@ node ganzua.js busca    archivo.zip wordlist.txt
 ```
 
 Todos aceptan `--json` para salida estructurada, `--entrada N` para elegir la
-entrada a atacar, y `--help` / `--version`.
+entrada a atacar, `--todas` para operar sobre todas las entradas cifradas
+(`verifica`/`material`; en `romper` indica qué entradas abre la contraseña
+encontrada), y `--help` / `--version`.
 
 ## Cómo funciona
 

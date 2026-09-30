@@ -63,6 +63,18 @@ const aesSpecs = [
     password: 'Clave_192',
     content: deflateText,
   },
+  {
+    // Varias entradas cifradas con la misma contraseña (caso habitual).
+    file: 'aes256-multi.zip',
+    method: 'store',
+    nbits: 256,
+    password: 'Comun_2023',
+    entries: [
+      { name: 'uno.txt', content: 'primera entrada\n' },
+      { name: 'dos.txt', content: 'segunda entrada\n' },
+      { name: 'tres.txt', content: 'tercera entrada\n' },
+    ],
+  },
 ];
 
 function genAes() {
@@ -112,15 +124,19 @@ function genZipCrypto() {
 
 function writeManifest() {
   const entries = [
-    ...aesSpecs.map((s) => ({
-      file: s.file,
-      entry: s.entry,
-      encryption: 'aes',
-      method: s.method,
-      bits: s.nbits,
-      password: s.password,
-      content: s.content,
-    })),
+    ...aesSpecs.map((s) => {
+      const first = s.entries ? s.entries[0] : { name: s.entry, content: s.content };
+      return {
+        file: s.file,
+        entry: first.name,
+        encryption: 'aes',
+        method: s.method,
+        bits: s.nbits,
+        password: s.password,
+        content: first.content,
+        entries: s.entries ? s.entries.length : 1,
+      };
+    }),
     ...zcSpecs.map((s) => ({
       file: s.file,
       entry: s.entry,

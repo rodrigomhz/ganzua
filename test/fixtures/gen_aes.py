@@ -24,10 +24,13 @@ def main():
     for s in specs:
         comp = pyzipper.ZIP_DEFLATED if s["method"] == "deflate" else pyzipper.ZIP_STORED
         dest = os.path.join(out_dir, s["file"])
+        # A spec has either a single entry/content or an "entries" list.
+        entries = s.get("entries") or [{"name": s["entry"], "content": s["content"]}]
         with pyzipper.AESZipFile(dest, "w", compression=comp, encryption=pyzipper.WZ_AES) as z:
             z.setpassword(s["password"].encode("utf-8"))
             z.setencryption(pyzipper.WZ_AES, nbits=int(s.get("nbits", 256)))
-            z.writestr(s["entry"], s["content"].encode("utf-8"))
+            for e in entries:
+                z.writestr(e["name"], e["content"].encode("utf-8"))
     print(f"gen_aes.py: {len(specs)} fixtures AES en {out_dir}")
 
 if __name__ == "__main__":

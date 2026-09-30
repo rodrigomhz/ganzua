@@ -108,6 +108,10 @@ function openZip(file) {
   }
 }
 
+function encryptedEntries(zip) {
+  return zip.entries.filter((e) => e.encryption !== 'none');
+}
+
 function resolveEntry(zip, opts) {
   if (opts.entrada !== undefined) {
     const idx = Number(opts.entrada);
@@ -187,6 +191,11 @@ async function runSearch(zip, entry, opts) {
   if (isTTY && !opts.json) process.stderr.write('\r' + ' '.repeat(48) + '\r');
 
   if (opts.json) {
+    const abre = result.found
+      ? encryptedEntries(zip)
+          .filter((e) => verify(e, result.password))
+          .map((e) => ({ indice: e.index, nombre: e.name }))
+      : [];
     emitJson({
       archivo: zip.path,
       entrada: { indice: entry.index, nombre: entry.name },
@@ -195,15 +204,23 @@ async function runSearch(zip, entry, opts) {
       contrasena: result.password,
       candidatas: result.tried,
       ms: result.elapsedMs,
+      abre,
     });
     return result.found ? 0 : 1;
   }
 
   const secs = (result.elapsedMs / 1000).toFixed(1);
   if (result.found) {
+    // La contraseña suele abrir todas las entradas del ZIP: comprobémoslo.
+    const opened = encryptedEntries(zip)
+      .filter((e) => verify(e, result.password))
+      .map((e) => ({ indice: e.index, nombre: e.name }));
     out('');
     out(`  ✔ CONTRASEÑA ENCONTRADA: «${result.password}»`);
     out(`    (${result.tried} candidatas en ${secs} s)`);
+    if (opened.length > 1) {
+      out(`    abre ${opened.length} entradas: ${opened.map((o) => o.nombre).join(', ')}`);
+    }
     return 0;
   }
 
@@ -324,6 +341,7 @@ function cmdMaterial(positionals, opts) {
   const [file] = positionals;
   if (!file) fail('uso: ganzua material <archivo.zip> [--entrada N] [--json]');
   const zip = openZip(file);
+  if (opts.todas) return cmdMaterialTodas(zip, opts);
   const entry = resolveEntry(zip, opts);
   if (entry.encryption !== 'aes') {
     fail(`material genera hashes AES (modo 13600); la entrada "${entry.name}" es ${entry.encryption}`);
@@ -346,10 +364,39 @@ function cmdMaterial(positionals, opts) {
   return 0;
 }
 
+function cmdMaterialTodas(zip, opts) {
+  const aesEntries = encryptedEntries(zip).filter((e) => e.encryption === 'aes');
+  if (aesEntries.length === 0) fail('el ZIP no contiene entradas AES');
+  if (opts.json) {
+    emitJson({
+      archivo: zip.path,
+      modo_hashcat: 13600,
+      hashes: aesEntries.map((e) => ({ indice: e.index, nombre: e.name, hash: buildZip2Hash(e) })),
+    });
+    return 0;
+  }
+  for (const e of aesEntries) out(buildZip2Hash(e));
+  return 0;
+}
+
 function cmdVerifica(positionals, opts) {
   const [file, password] = positionals;
   if (!file || password === undefined) fail('uso: ganzua verifica <archivo.zip> <candidata> [--json]');
   const zip = openZip(file);
+
+  if (opts.todas) {
+    const enc = encryptedEntries(zip);
+    if (enc.length === 0) fail('el ZIP no contiene entradas cifradas');
+    const resultados = enc.map((e) => ({ indice: e.index, nombre: e.name, valida: verify(e, password) }));
+    const todas = resultados.every((r) => r.valida);
+    if (opts.json) {
+      emitJson({ archivo: zip.path, candidata: password, valida_todas: todas, entradas: resultados });
+      return todas ? 0 : 1;
+    }
+    for (const r of resultados) out(`${r.valida ? '✔' : '✗'} [${r.indice}] ${r.nombre}`);
+    return todas ? 0 : 1;
+  }
+
   const entry = resolveEntry(zip, opts);
   const ok = verify(entry, password);
   if (opts.json) {
@@ -399,6 +446,9 @@ COMANDOS DE APOYO
 OPCIONES COMUNES
   --entrada <N>              Índice de entrada a atacar (por defecto, la primera
                              cifrada). Usa "analiza" para ver los índices.
+  --todas                    Opera sobre todas las entradas cifradas
+                             (verifica/material). En romper indica qué entradas
+                             abre la contraseña encontrada.
   --json                     Salida en JSON.
   -h, --help                 Esta ayuda.       -v, --version   Versión.
 
