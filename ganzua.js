@@ -566,7 +566,7 @@ async function cmdExtrae(positionals, opts) {
   }
 
   fs.mkdirSync(outDir, { recursive: true });
-  const results = extractEntries(zip, targets, { password, keys, outDir, encoding });
+  const results = await extractEntries(zip, targets, { password, keys, outDir, encoding });
   const okCount = results.filter((r) => r.ok).length;
 
   if (opts.json) {
@@ -658,7 +658,7 @@ async function cmdTextoPlano(positionals, opts) {
   const outDir = opts.salida || '.';
   fs.mkdirSync(outDir, { recursive: true });
   const targets = zip.entries.filter((e) => e.encryption === 'zipcrypto' || e.encryption === 'none');
-  const results = extractEntries(zip, targets, { keys, outDir });
+  const results = await extractEntries(zip, targets, { keys, outDir });
   const okCount = results.filter((r) => r.ok).length;
   const clavesHex = keys.map((k) => k.toString(16).padStart(8, '0'));
 

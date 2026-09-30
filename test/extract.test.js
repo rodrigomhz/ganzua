@@ -26,20 +26,20 @@ test('safeJoin normaliza rutas y bloquea path traversal (zip slip)', () => {
   assert.strictEqual(safeJoin(base, '/etc/passwd'), path.join('/out', 'etc', 'passwd'));
 });
 
-test('extractEntries descifra y escribe con CRC correcto (multi-entrada)', () => {
+test('extractEntries descifra y escribe con CRC correcto (multi-entrada)', async () => {
   const zip = readZip(fixturePath('aes256-multi.zip'));
   const dir = tmpDir();
-  const res = extractEntries(zip, zip.entries, { password: 'Comun_2023', outDir: dir });
+  const res = await extractEntries(zip, zip.entries, { password: 'Comun_2023', outDir: dir });
   assert.strictEqual(res.length, 3);
   assert.ok(res.every((r) => r.ok));
   assert.strictEqual(fs.readFileSync(path.join(dir, 'uno.txt'), 'utf8'), 'primera entrada\n');
   assert.strictEqual(fs.readFileSync(path.join(dir, 'dos.txt'), 'utf8'), 'segunda entrada\n');
 });
 
-test('extractEntries rechaza (CRC/inflate) con contraseña incorrecta', () => {
+test('extractEntries rechaza (CRC/inflate) con contraseña incorrecta', async () => {
   const zip = readZip(fixturePath('zipcrypto-deflate.zip'));
   const dir = tmpDir();
-  const res = extractEntries(zip, zip.entries, { password: 'incorrecta', outDir: dir });
+  const res = await extractEntries(zip, zip.entries, { password: 'incorrecta', outDir: dir });
   assert.ok(!res[0].ok, 'no debe extraerse con contraseña incorrecta');
 });
 

@@ -38,5 +38,9 @@
     "c8": "^10.1.3",
     "eslint": "^9.39.5",
     "prettier": "^3.9.9"
+  },
+  "dependencies": {
+    "lzma": "^2.3.2",
+    "seek-bzip": "^2.0.0"
   }
 }

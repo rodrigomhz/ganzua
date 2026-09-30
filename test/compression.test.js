@@ -51,12 +51,13 @@ test('ZipCrypto STORE/DEFLATE sigue confirmando por CRC-32', () => {
   assert.ok(verify(deflate, 'clave'));
 });
 
-test('extraer un método no soportado se rechaza (sin corromper)', () => {
-  const e = makeZcEntry('clave', 12, Buffer.from('BZh91AY&SYzzzz', 'latin1'), 0x12345678);
+test('extraer un método no soportado (PPMd) se rechaza sin corromper', () => {
+  const e = makeZcEntry('clave', 98, Buffer.from('datos ppmd cualesquiera'), 0x12345678); // 98 = PPMd
   const zip = { buf: Buffer.alloc(0) };
-  const res = extractEntries(zip, [e], { password: 'clave', outDir: require('os').tmpdir() });
-  assert.ok(!res[0].ok);
-  assert.match(res[0].error, /BZIP2|no soportada/);
+  return extractEntries(zip, [e], { password: 'clave', outDir: require('os').tmpdir() }).then((res) => {
+    assert.ok(!res[0].ok);
+    assert.match(res[0].error, /98|no soportada/);
+  });
 });
 
 test('methodName nombra los métodos comunes', () => {

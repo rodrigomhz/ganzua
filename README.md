@@ -47,7 +47,10 @@ node ganzua.js extrae archivo.zip --salida ./salida           # rompe y extrae t
 node ganzua.js extrae archivo.zip "Barcelona2024" --salida .  # con contraseña conocida
 ```
 
-Verifica el CRC-32 de cada fichero y protege contra _path traversal_ (zip slip).
+Descomprime **STORE, DEFLATE, BZIP2 y LZMA** (los métodos que mete 7-Zip en un
+`.zip`), verifica el CRC-32 de cada fichero y protege contra _path traversal_
+(zip slip). Hay una demo completa en [`examples/demo.sh`](examples/demo.sh) que
+rompe ZIP reales y recupera los ficheros idénticos al original.
 
 ### ZipCrypto: ataque de texto plano (sin contraseña)
 
@@ -262,7 +265,8 @@ máscara se pasa tal cual. También puedes generar el hash y usar hashcat a mano
 
 ## Requisitos
 
-- Node.js 18+ (sin dependencias de terceros en tiempo de ejecución).
+- Node.js 18+. Dependencias en tiempo de ejecución mínimas: `seek-bzip` y
+  `lzma` (para descomprimir BZIP2/LZMA al extraer; el resto es nativo de Node).
 - Para regenerar los fixtures de test: Python 3 con
   [`pyzipper`](https://pypi.org/project/pyzipper/) y el comando `zip` del
   sistema.
