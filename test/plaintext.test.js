@@ -90,10 +90,23 @@ test('CLI extrae --claves rechaza claves incorrectas', () => {
   assert.match(stderr, /CRC no coincide|no descifran/);
 });
 
-test('CLI textoplano sin bkcrack da instrucciones claras', () => {
-  if (bkcrack.isAvailable()) return;
+test('CLI textoplano exige suficiente texto plano', () => {
+  // El motor nativo es el predeterminado; con 4 bytes no hay ataque posible.
   const { status, stderr } = runCli(['textoplano', fixturePath('zipcrypto-store.zip'), '--plano-hex', 'deadbeef']);
   assert.notStrictEqual(status, 0);
+  assert.match(stderr, /texto plano insuficiente|mínimo/i);
+});
+
+test('CLI textoplano --bkcrack sin bkcrack avisa', () => {
+  if (bkcrack.isAvailable()) return;
+  const hex = '00'.repeat(16); // suficiente longitud para pasar la validación
+  const { status, stderr } = runCli([
+    'textoplano',
+    '--bkcrack',
+    fixturePath('zipcrypto-store.zip'),
+    '--plano-hex',
+    hex,
+  ]);
+  assert.notStrictEqual(status, 0);
   assert.match(stderr, /bkcrack/);
-  assert.match(stderr, /--claves/);
 });

@@ -22,6 +22,7 @@ const hashcat = require('./lib/hashcat');
 const bkcrack = require('./lib/bkcrack');
 const aesCrypto = require('./lib/crypto-aes');
 const zipcrypto = require('./lib/crypto-zipcrypto');
+const { recoverKeysParallel } = require('./lib/zipcrypto-attack-parallel');
 const { extractEntries } = require('./lib/extract');
 
 // Below this many candidates the worker-pool overhead is not worth it.
@@ -59,6 +60,7 @@ function parseArgs(argv) {
     else if (a === '--reglas' || a === '--rules') opts.reglas = true;
     else if (a === '--cp437' || a === '--oem') opts.cp437 = true;
     else if (a === '--hashcat') opts.hashcat = true;
+    else if (a === '--bkcrack') opts.bkcrack = true;
     else if (a === '--todas' || a === '--all') opts.todas = true;
     else if (a === '--help' || a === '-h') opts.help = true;
     else if (a === '--version' || a === '-v') opts.version = true;
@@ -595,23 +597,55 @@ async function cmdTextoPlano(positionals, opts) {
   if (!opts.plano && !opts['plano-hex']) {
     fail('indica el texto plano conocido: --plano <fichero> o --plano-hex <hex> [--offset N] (≥12 bytes, 8 contiguos)');
   }
-  if (!bkcrack.isAvailable()) {
-    fail(
-      'bkcrack no está en el PATH. Instálalo (https://github.com/kimci86/bkcrack) para el ataque de texto plano.\n' +
-        `Si ya conoces las claves internas: ganzua extrae ${path.basename(file)} --claves k0:k1:k2`,
-    );
+
+  // Texto plano conocido (del flujo cifrado: contenido para STORE, bytes
+  // comprimidos para DEFLATE) y su offset dentro del cuerpo.
+  let plaintext;
+  if (opts.plano) plaintext = fs.readFileSync(opts.plano);
+  else {
+    const hex = opts['plano-hex'].replace(/\s+/g, '');
+    if (!/^[0-9a-fA-F]*$/.test(hex) || hex.length % 2 !== 0) fail('--plano-hex debe ser hex par');
+    plaintext = Buffer.from(hex, 'hex');
+  }
+  const offsetArg = opts.offset !== undefined ? Number(opts.offset) : 0;
+
+  const started = Date.now();
+  let keys;
+  if (opts.bkcrack) {
+    if (!bkcrack.isAvailable()) fail('bkcrack no está en el PATH (https://github.com/kimci86/bkcrack)');
+    if (!opts.json) note(`ganzua · ataque de texto plano (bkcrack) sobre "${entry.name}"…`);
+    keys = bkcrack.run({
+      zip: file,
+      entry: entry.name,
+      plainFile: opts.plano,
+      offset: offsetArg,
+      hex: opts['plano-hex'],
+    });
+  } else {
+    // Ataque nativo Biham-Kocher (paralelo).
+    if (!opts.json) note(`ganzua · ataque de texto plano nativo (Biham-Kocher) sobre "${entry.name}"…`);
+    const ciphertext = Buffer.concat([entry.crypto.header, entry.crypto.body]);
+    const workers = opts.hilos ? Number(opts.hilos) : undefined;
+    try {
+      keys = await recoverKeysParallel(ciphertext, plaintext, offsetArg, {
+        workers,
+        onZreduce:
+          opts.json || !isTTY
+            ? undefined
+            : (d, t) => process.stderr.write(`\r  reduciendo Z… ${((d / t) * 100).toFixed(0)}%   `),
+        onProgress:
+          opts.json || !isTTY ? undefined : (d, t) => process.stderr.write(`\r  probando ${d}/${t} valores Z…      `),
+      });
+    } catch (err) {
+      fail(`fallo en el ataque: ${err.message}`);
+    }
+    if (isTTY && !opts.json) process.stderr.write('\r' + ' '.repeat(48) + '\r');
+  }
+  if (!keys) {
+    fail('no se recuperaron las claves (¿texto plano correcto y suficiente? ≥12 bytes, 8 contiguos)');
   }
 
-  if (!opts.json) note(`ganzua · ataque de texto plano (bkcrack) sobre "${entry.name}"…`);
-  const keys = bkcrack.run({
-    zip: file,
-    entry: entry.name,
-    plainFile: opts.plano,
-    offset: opts.offset,
-    hex: opts['plano-hex'],
-  });
-  if (!keys) fail('bkcrack no recuperó las claves (¿texto plano suficiente? ≥12 bytes con 8 contiguos)');
-
+  const secs = ((Date.now() - started) / 1000).toFixed(1);
   const outDir = opts.salida || '.';
   fs.mkdirSync(outDir, { recursive: true });
   const targets = zip.entries.filter((e) => e.encryption === 'zipcrypto' || e.encryption === 'none');
@@ -623,7 +657,7 @@ async function cmdTextoPlano(positionals, opts) {
     emitJson({ archivo: zip.path, claves: clavesHex, salida: outDir, extraidas: okCount, entradas: results });
     return results.every((r) => r.ok) ? 0 : 1;
   }
-  out(`  ✔ claves ZipCrypto: ${clavesHex.join(' ')}`);
+  out(`  ✔ claves ZipCrypto: ${clavesHex.join(' ')}  (${secs} s)`);
   for (const r of results) {
     if (r.ok) out(`  ✔ ${r.nombre}${r.directorio ? '' : ` (${r.bytes} B)`}`);
     else out(`  ✗ ${r.nombre} — ${r.error}`);
@@ -824,10 +858,15 @@ OBTENER EL CONTENIDO
       --entrada N | --todas  Qué extraer (por defecto, todo).
 
   textoplano <archivo.zip>   Ataque de texto plano conocido contra ZipCrypto
-                             (Biham-Kocher, vía bkcrack): recupera las claves y
+                             (Biham-Kocher NATIVO): recupera las claves y
                              descifra TODO sin la contraseña, sea cual sea.
-      --plano <fichero>      Texto plano conocido (≥12 bytes, 8 contiguos).
+      --plano <fichero>      Texto plano conocido (≥12 bytes, 8 contiguos) del
+                             flujo cifrado (contenido en STORE; comprimido en
+                             DEFLATE).
       --plano-hex <hex> [--offset N]   Texto plano como hex a un offset.
+      --hilos <N>            Nº de hilos del ataque.
+      --bkcrack              Usa bkcrack (si está en el PATH) en vez del motor
+                             nativo.
 
 COMANDOS DE APOYO
   analiza  <archivo.zip>     Detecta el cifrado y muestra salt/verificador.

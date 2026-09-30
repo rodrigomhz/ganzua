@@ -53,22 +53,23 @@ Verifica el CRC-32 de cada fichero y protege contra _path traversal_ (zip slip).
 
 El cifrado clásico **ZipCrypto está roto**: con ~12 bytes de texto plano conocido
 (8 contiguos) de una entrada se recuperan las claves internas y se descifra
-**todo el archivo, sea cual sea la longitud de la contraseña** (ataque de
-Biham-Kocher). ganzua lo integra vía [`bkcrack`](https://github.com/kimci86/bkcrack)
-si está en el `PATH`:
+**todo el archivo, sea cual sea la longitud de la contraseña**. ganzua incluye
+una **implementación nativa del ataque de Biham-Kocher** (port del algoritmo de
+[`bkcrack`](https://github.com/kimci86/bkcrack)), paralelizada con
+`worker_threads` — no necesita ninguna herramienta externa:
 
 ```bash
-# Conoces parte del contenido de una entrada (p. ej. una cabecera conocida):
+# Conoces parte del contenido de una entrada (STORE: el contenido; DEFLATE: los
+# bytes comprimidos). El ataque recupera las claves y extrae TODO sin la clave:
 node ganzua.js textoplano archivo.zip --entrada 0 --plano cabecera_conocida.bin --salida ./out
 
-# O, si ya recuperaste las claves internas (con bkcrack u otra herramienta),
-# extrae directamente sin contraseña:
+# O, si ya recuperaste las claves internas, extrae directamente sin contraseña:
 node ganzua.js extrae archivo.zip --claves 12345678:9abcdef0:0f1e2d3c --salida ./out
 ```
 
-> El descifrado a partir de claves internas es nativo de ganzua; el propio ataque
-> Biham-Kocher se delega hoy en `bkcrack`. Una implementación nativa del ataque
-> está en la hoja de ruta.
+Con `--bkcrack` delega en `bkcrack` (si está en el `PATH`) en vez del motor
+nativo. Cuanto más texto plano conocido (de alta entropía) proporciones, más
+rápido converge el ataque.
 
 Cuando no la encuentra con los valores por defecto:
 
@@ -181,7 +182,7 @@ node ganzua.js romper archivo.zip --agresivo --checkpoint progreso.json  # reanu
 | ------------ | ------------------------------------------------------------------------ |
 | **`romper`** | **Encuentra la contraseña sin conocerla (wordlist + patrones).**         |
 | **`extrae`** | **Descifra y vuelca el contenido** (rompe primero si hace falta).        |
-| `textoplano` | Ataque de texto plano ZipCrypto (Biham-Kocher, vía bkcrack).             |
+| `textoplano` | Ataque de texto plano ZipCrypto (Biham-Kocher **nativo**).               |
 | `analiza`    | Detecta el cifrado y muestra salt, verificador y auth por entrada.       |
 | `material`   | Emite el hash `$zip2$` para `hashcat -m 13600` / John `zip2john`.        |
 | `verifica`   | Prueba una única contraseña candidata contra el archivo.                 |
@@ -209,7 +210,9 @@ encontrada), y `--help` / `--version`.
   contenido. Cero falsos positivos.
 - **ZipCrypto** (PKWARE tradicional): keystream de 96 bits. Rechazo rápido por
   el _check byte_ de la cabecera (12 bytes) y confirmación definitiva
-  descifrando el cuerpo y comparando el CRC-32.
+  descifrando el cuerpo y comparando el CRC-32. Además, ataque de **texto plano
+  conocido (Biham-Kocher) nativo** que recupera las claves internas y descifra
+  todo sin la contraseña (ver arriba).
 - Parsea la cabecera local del ZIP directamente, usando el directorio central
   como fuente autoritativa de tamaños y flags (fiable incluso con _data
   descriptor_).

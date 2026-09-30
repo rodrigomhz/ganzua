@@ -67,3 +67,5 @@ jobs:
       - run: npm ci
       - name: Coverage (c8)
         run: npm run coverage
+        env:
+          GANZUA_SLOW: '1' # ejercita también el ataque nativo Biham-Kocher e2e
