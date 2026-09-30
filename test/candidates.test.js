@@ -61,6 +61,28 @@ test('patternCandidates con %n y %D produce dígitos', () => {
   assert.deepStrictEqual(dd, ['00', '01', '02']);
 });
 
+test('maskCandidates expande máscaras estilo hashcat', () => {
+  assert.deepStrictEqual(collect(candidates.maskCandidates('A?d')), ['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9']);
+  const dd = collect(candidates.maskCandidates('?d?d'));
+  assert.strictEqual(dd.length, 100);
+  assert.strictEqual(dd[0], '00');
+  assert.strictEqual(dd[99], '99');
+  assert.deepStrictEqual(collect(candidates.maskCandidates('??')), ['?']); // literal
+});
+
+test('estimateMaskCount calcula el tamaño del espacio', () => {
+  assert.strictEqual(candidates.estimateMaskCount('?d?d'), 100);
+  assert.strictEqual(candidates.estimateMaskCount('?l'), 26);
+  assert.strictEqual(candidates.estimateMaskCount('Casa?d?d?d?d'), 10000);
+  // Muy grande => null (excede el entero seguro).
+  assert.strictEqual(candidates.estimateMaskCount('?a?a?a?a?a?a?a?a?a?a'), null);
+});
+
+test('parseMask rechaza tokens desconocidos', () => {
+  assert.throws(() => candidates.parseMask('?z'), /token de máscara/);
+  assert.throws(() => candidates.parseMask('abc?'), /incompleta/);
+});
+
 test('loadWordlist trata cada línea como literal (sin comentarios)', () => {
   const os = require('os');
   const fs = require('fs');

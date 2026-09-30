@@ -28,7 +28,7 @@ const VERSION = require('./package.json').version;
 // Minimal argument parsing
 // ---------------------------------------------------------------------------
 
-const FLAGS_WITH_VALUE = new Set(['--wordlist', '--patron', '--limite', '--entrada', '--hilos']);
+const FLAGS_WITH_VALUE = new Set(['--wordlist', '--patron', '--mascara', '--limite', '--entrada', '--hilos']);
 
 function parseArgs(argv) {
   const positionals = [];
@@ -131,6 +131,19 @@ function resolveEntry(zip, opts) {
 
 function buildCandidateStream(opts) {
   const words = opts.wordlist ? candidates.loadWordlist(opts.wordlist) : undefined;
+  if (opts.mascara) {
+    let total;
+    try {
+      total = candidates.estimateMaskCount(opts.mascara);
+    } catch (err) {
+      fail(err.message);
+    }
+    return {
+      stream: candidates.maskCandidates(opts.mascara),
+      total,
+      label: `máscara "${opts.mascara}"`,
+    };
+  }
   if (opts.patron) {
     return {
       stream: candidates.patternCandidates(opts.patron, { words, aggressive: opts.agresivo }),
@@ -256,9 +269,9 @@ async function cmdRomper(positionals, opts) {
 async function cmdBusca(positionals, opts) {
   const [file, maybeWordlist] = positionals;
   if (!file) fail('uso: ganzua busca <archivo.zip> [wordlist.txt | --patron "..."] [--agresivo] [--json]');
-  if (maybeWordlist && !opts.wordlist && !opts.patron) opts.wordlist = maybeWordlist;
-  if (!opts.wordlist && !opts.patron) {
-    fail('busca necesita una wordlist o --patron (para valores por defecto usa: ganzua romper)');
+  if (maybeWordlist && !opts.wordlist && !opts.patron && !opts.mascara) opts.wordlist = maybeWordlist;
+  if (!opts.wordlist && !opts.patron && !opts.mascara) {
+    fail('busca necesita una wordlist, --patron o --mascara (para valores por defecto usa: ganzua romper)');
   }
   const zip = openZip(file);
   const entry = resolveEntry(zip, opts);
@@ -432,6 +445,7 @@ COMANDO PRINCIPAL
                              año+sufijo). Si no la encuentra, indica qué probar.
       --wordlist <fichero>   Usa tu propia wordlist en vez de la incluida.
       --patron "<plantilla>" Genera candidatas desde una plantilla (ver abajo).
+      --mascara "<máscara>"  Ataque por máscara estilo hashcat (ver abajo).
       --agresivo             Amplía años y sufijos automáticamente.
       --hilos <N>            Nº de hilos (AES). Por defecto: nº de CPUs.
       --secuencial           Fuerza búsqueda en un solo hilo.
@@ -456,6 +470,11 @@ PLANTILLAS DE --patron
   %s palabra de la wordlist   %c palabra capitalizada   %y año
   %n dígito 0-9               %D número 00-99
   Ejemplo:  ganzua romper archivo.zip --patron "Palabra_%s_%y"
+
+MÁSCARAS DE --mascara
+  ?l a-z   ?u A-Z   ?d 0-9   ?s símbolos   ?a todo   ?? literal "?"
+  El resto de caracteres son literales.
+  Ejemplo:  ganzua romper archivo.zip --mascara "Casa?d?d?d?d"
 
 EJEMPLOS
   ganzua romper   archivo.zip

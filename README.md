@@ -84,6 +84,26 @@ grandes de calidad, [SecLists](https://github.com/danielmiessler/SecLists)
 node ganzua.js romper archivo.zip --patron "Empresa_%s_%y"
 ```
 
+### Ataque por máscara
+
+`--mascara` prueba todas las combinaciones de una máscara estilo hashcat, útil
+cuando conoces la estructura de la contraseña:
+
+| Token | Conjunto        |
+|-------|-----------------|
+| `?l`  | `a`–`z`         |
+| `?u`  | `A`–`Z`         |
+| `?d`  | `0`–`9`         |
+| `?s`  | símbolos        |
+| `?a`  | todo lo anterior|
+| `??`  | literal `?`     |
+
+El resto de caracteres son literales:
+
+```bash
+node ganzua.js romper archivo.zip --mascara "Casa?d?d?d?d"   # Casa0000…Casa9999
+```
+
 ## Comandos
 
 `romper` es el comando principal. El resto son de **apoyo y depuración**:

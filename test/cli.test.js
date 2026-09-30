@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { runCli, fixturePath } = require('./helpers');
+const { runCli, fixturePath, makeAesZip } = require('./helpers');
 
 test('--version imprime la versión', () => {
   const { status, stdout } = runCli(['--version']);
@@ -120,6 +120,20 @@ test('romper informa qué entradas abre la contraseña (campo abre)', () => {
   assert.strictEqual(status, 0);
   assert.strictEqual(j.encontrada, true);
   assert.strictEqual(j.abre.length, 3);
+});
+
+test('romper --mascara encuentra la contraseña por máscara', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gz-mask-'));
+  const zip = makeAesZip({ dir, password: 'Casa2027' });
+  const { status, stdout } = runCli(['romper', '--mascara', 'Casa?d?d?d?d', '--json', zip]);
+  const j = JSON.parse(stdout);
+  assert.strictEqual(status, 0);
+  assert.strictEqual(j.encontrada, true);
+  assert.strictEqual(j.contrasena, 'Casa2027');
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('comando desconocido falla con ayuda', () => {
