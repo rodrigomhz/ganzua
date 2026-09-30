@@ -14,9 +14,10 @@ const path = require('path');
 
 const { readZip, firstEncryptedEntry, ZipError } = require('./lib/zip');
 const { verify, decrypt } = require('./lib/verify');
-const { search } = require('./lib/search');
+const { searchAsync } = require('./lib/search');
 const { searchParallel, defaultWorkers } = require('./lib/search-parallel');
 const candidates = require('./lib/candidates');
+const checkpoint = require('./lib/checkpoint');
 const aesCrypto = require('./lib/crypto-aes');
 
 // Below this many candidates the worker-pool overhead is not worth it.
@@ -28,7 +29,7 @@ const VERSION = require('./package.json').version;
 // Minimal argument parsing
 // ---------------------------------------------------------------------------
 
-const FLAGS_WITH_VALUE = new Set(['--wordlist', '--patron', '--mascara', '--limite', '--entrada', '--hilos']);
+const FLAGS_WITH_VALUE = new Set(['--wordlist', '--patron', '--mascara', '--limite', '--entrada', '--hilos', '--checkpoint']);
 
 function parseArgs(argv) {
   const positionals = [];
@@ -188,6 +189,21 @@ async function runSearch(zip, entry, opts) {
   const limit = opts.limite ? Number(opts.limite) : undefined;
   const workers = planWorkers(entry, total, opts);
 
+  // Checkpoint / resume.
+  const cpFile = opts.checkpoint;
+  const firma = cpFile ? checkpoint.signature(zip.path, entry.index, opts) : null;
+  let startAt = 0;
+  if (cpFile) {
+    const cp = checkpoint.load(cpFile);
+    if (cp && cp.firma === firma && cp.position > 0) {
+      startAt = cp.position;
+      if (!opts.json) note(`  reanudando desde la candidata ${startAt} (checkpoint)`);
+    }
+  }
+  const onCheckpoint = cpFile
+    ? (position) => checkpoint.save(cpFile, { firma, archivo: zip.path, entrada: entry.index, position, total })
+    : undefined;
+
   if (!opts.json) {
     note(`ganzua · rompiendo ${path.basename(zip.path)}`);
     note(`  cifrado: ${describeEncryption(entry)} — entrada "${entry.name}"`);
@@ -195,13 +211,58 @@ async function runSearch(zip, entry, opts) {
     note(`  probando ${label}${total ? ` (~${total} candidatas)` : ''}${paralelo}…`);
   }
 
+  // Abort on SIGINT (Ctrl+C): stop cleanly, summarise, save checkpoint.
+  const ac = new AbortController();
+  let interrupted = false;
+  const onSigint = () => {
+    if (interrupted) process.exit(130); // segundo Ctrl+C: salida inmediata
+    interrupted = true;
+    ac.abort();
+  };
+  process.on('SIGINT', onSigint);
+
   const onProgress = opts.json ? undefined : progressReporter(total);
-  const result =
-    workers > 0
-      ? await searchParallel(entry, stream, { workers, onProgress, limit })
-      : search(entry, stream, { onProgress, limit });
+  const common = { onProgress, limit, startAt, signal: ac.signal, onCheckpoint };
+  let result;
+  try {
+    result =
+      workers > 0
+        ? await searchParallel(entry, stream, { workers, ...common })
+        : await searchAsync(entry, stream, common);
+  } finally {
+    process.off('SIGINT', onSigint);
+  }
 
   if (isTTY && !opts.json) process.stderr.write('\r' + ' '.repeat(48) + '\r');
+
+  // Interrupted: persist progress and report a summary.
+  if (result.stopped) {
+    if (cpFile) {
+      checkpoint.save(cpFile, { firma, archivo: zip.path, entrada: entry.index, position: result.position, total });
+    }
+    const secs = (result.elapsedMs / 1000).toFixed(1);
+    if (opts.json) {
+      emitJson({
+        archivo: zip.path,
+        entrada: { indice: entry.index, nombre: entry.name },
+        encontrada: false,
+        interrumpida: true,
+        posicion: result.position,
+        candidatas: result.tried,
+        ms: result.elapsedMs,
+        checkpoint: cpFile || null,
+      });
+    } else {
+      note('');
+      note(`  ⏸ interrumpida: ${result.tried} candidatas probadas (posición ${result.position}) en ${secs} s`);
+      if (cpFile) note(`  checkpoint guardado en ${cpFile} — reanuda con: --checkpoint ${cpFile}`);
+      else note('  (usa --checkpoint <fichero> para poder reanudar)');
+    }
+    return 130;
+  }
+
+  // Búsqueda terminada (encontrada o agotada): el checkpoint ya no sirve.
+  if (cpFile) checkpoint.remove(cpFile);
 
   if (opts.json) {
     const abre = result.found
@@ -449,6 +510,8 @@ COMANDO PRINCIPAL
       --agresivo             Amplía años y sufijos automáticamente.
       --hilos <N>            Nº de hilos (AES). Por defecto: nº de CPUs.
       --secuencial           Fuerza búsqueda en un solo hilo.
+      --checkpoint <fichero> Guarda el progreso y reanuda desde él (búsquedas
+                             largas). Ctrl+C guarda y sale con un resumen.
       --json                 Salida JSON.
 
 COMANDOS DE APOYO

@@ -104,6 +104,21 @@ El resto de caracteres son literales:
 node ganzua.js romper archivo.zip --mascara "Casa?d?d?d?d"   # Casa0000…Casa9999
 ```
 
+### Búsquedas largas: checkpoint y Ctrl+C
+
+Para ataques largos, `--checkpoint <fichero>` guarda el progreso periódicamente
+y reanuda desde ahí si vuelves a lanzarlo con el mismo fichero. **Ctrl+C**
+detiene la búsqueda de forma limpia, muestra un resumen (candidatas probadas,
+posición, tiempo) y guarda el checkpoint:
+
+```bash
+node ganzua.js romper archivo.zip --agresivo --checkpoint progreso.json
+# … Ctrl+C …
+#   ⏸ interrumpida: 84000 candidatas probadas (posición 84000) en 35.2 s
+#   checkpoint guardado en progreso.json — reanuda con: --checkpoint progreso.json
+node ganzua.js romper archivo.zip --agresivo --checkpoint progreso.json  # reanuda
+```
+
 ## Comandos
 
 `romper` es el comando principal. El resto son de **apoyo y depuración**:
