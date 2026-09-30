@@ -124,16 +124,20 @@ function describeEncryption(entry) {
 
 function openZip(file) {
   if (!fs.existsSync(file)) fail(`no existe el archivo: ${file}`);
-  // Si no es un ZIP, identifica el formato y orienta al usuario.
-  const fmt = formato.detectFile(file);
-  if (fmt !== 'zip') {
-    const meta = formato.info(fmt);
-    fail(`"${path.basename(file)}" no es un ZIP (parece ${meta.nombre}).\n${meta.guia}`);
-  }
+  // Se intenta parsear como ZIP primero (así funcionan los SFX .exe con stub
+  // antepuesto, que se detectan por el EOCD del final, no por los bytes
+  // iniciales). Solo si falla se identifica el formato para orientar.
   try {
     return readZip(file);
   } catch (err) {
-    if (err instanceof ZipError) fail(err.message);
+    if (err instanceof ZipError) {
+      const fmt = formato.detectFile(file);
+      if (fmt !== 'zip' && fmt !== 'desconocido') {
+        const meta = formato.info(fmt);
+        fail(`"${path.basename(file)}" no es un ZIP (parece ${meta.nombre}).\n${meta.guia}`);
+      }
+      fail(err.message);
+    }
     throw err;
   }
 }
@@ -678,7 +682,17 @@ function cmdFormato(positionals, opts) {
   const [file] = positionals;
   if (!file) fail('uso: ganzua formato <archivo> [--json]');
   if (!fs.existsSync(file)) fail(`no existe el archivo: ${file}`);
-  const id = formato.detectFile(file);
+  let id = formato.detectFile(file);
+  // Un ZIP con stub antepuesto (SFX .exe) no tiene la firma al principio pero
+  // sí un EOCD al final: si no se reconoció por bytes iniciales, se intenta.
+  if (id !== 'zip') {
+    try {
+      readZip(file);
+      id = 'zip';
+    } catch {
+      /* no es un ZIP */
+    }
+  }
   const meta = formato.info(id);
   if (opts.json) {
     emitJson({ archivo: file, formato: id, nombre: meta.nombre, nativo: meta.nativo, guia: meta.guia });
