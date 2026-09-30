@@ -56,5 +56,16 @@ if command -v zip >/dev/null 2>&1; then
   if cmp -s known.bin out/known.bin; then ok "textoplano recuperó el contenido sin la contraseña"; else ko "textoplano falló"; fi
 fi
 
+# RESCATE SIN DESCIFRAR: reconstruye el contenido de una entrada pequeña desde
+# el CRC-32 en claro, sin la contraseña y sin descifrar ni un byte.
+if command -v zip >/dev/null 2>&1; then
+  echo "== ZipCrypto · rescate por CRC-32 (sin descifrar) =="
+  printf 'PIN' > pin.txt
+  zip -q -0 -e -j -P "clave-larguisima-irrelevante-para-el-CRC-9Z" crc.zip pin.txt
+  rm -rf out; mkdir out
+  node "$GZ" rescata crc.zip --salida out >/dev/null 2>&1
+  if [ "$(cat out/pin.txt 2>/dev/null)" = "PIN" ]; then ok "rescata reconstruyó el contenido por CRC-32 sin la contraseña"; else ko "rescata falló"; fi
+fi
+
 echo "== RESULTADO: $pass OK, $fail fallos =="
 [ "$fail" -eq 0 ]

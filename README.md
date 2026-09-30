@@ -83,6 +83,35 @@ motor JS. Con `--js` fuerzas el motor JS aunque el addon esté disponible, y con
 `--bkcrack` delegas en `bkcrack` (si está en el `PATH`). Cuanto más texto plano
 conocido (de alta entropía) proporciones, más rápido converge el ataque.
 
+### Sin descifrar nada: rescatar contenido sin contraseña
+
+Un ZIP filtra información aunque esté cifrado, y a veces **el contenido entero
+sin gastar ni un intento de contraseña**. `rescata` obtiene todo lo que el
+archivo entrega sin descifrar:
+
+- **Entradas sin cifrar.** Muchos archivos «cifrados» mezclan entradas sin
+  proteger (una carpeta, un `readme`, una miniatura). Se extraen directamente.
+- **Reconstrucción por CRC-32.** El directorio central guarda el CRC-32 del
+  contenido **en claro** de cada entrada, aunque esté cifrada (ZipCrypto
+  siempre; WinZip AES solo en su variante AE-1). Para entradas pequeñas ese CRC
+  basta para reconstruir el contenido por fuerza bruta del texto plano — **sin
+  tocar la contraseña ni el flujo cifrado, aunque sea AES-256**. El CRC-32 sobre
+  entradas de ≤ 4 bytes es inyectivo, así que el contenido recuperado es único.
+
+```bash
+# Mapa de lo obtenible sin contraseña (no escribe nada):
+node ganzua.js rescata archivo.zip --listar
+
+# Vuelca todo lo rescatable sin contraseña (sin cifrar + reconstruible por CRC):
+node ganzua.js rescata archivo.zip --salida ./out
+
+# Alfabeto/limite para la reconstrucción por CRC-32 de entradas algo mayores:
+node ganzua.js rescata archivo.zip --charset digits --maxbytes 6 --salida ./out
+```
+
+`analiza` marca, entrada por entrada, qué es obtenible sin contraseña. Esta vía
+no descifra nada: no pierde tiempo probando claves.
+
 Cuando no la encuentra con los valores por defecto:
 
 ```text
@@ -213,16 +242,17 @@ qué usar en vez de fallar sin más.
 
 `romper` es el comando principal. El resto son de **apoyo y depuración**:
 
-| Comando      | Para qué sirve                                                           |
-| ------------ | ------------------------------------------------------------------------ |
-| **`romper`** | **Encuentra la contraseña sin conocerla (wordlist + patrones).**         |
-| **`extrae`** | **Descifra y vuelca el contenido** (rompe primero si hace falta).        |
-| `textoplano` | Ataque de texto plano ZipCrypto (Biham-Kocher **nativo**).               |
-| `formato`    | Identifica el formato (ZIP/7z/RAR/…) e indica cómo atacarlo.             |
-| `analiza`    | Detecta el cifrado y muestra salt, verificador y auth por entrada.       |
-| `material`   | Emite el hash `$zip2$` para `hashcat -m 13600` / John `zip2john`.        |
-| `verifica`   | Prueba una única contraseña candidata contra el archivo.                 |
-| `busca`      | Búsqueda de bajo nivel: como `romper`, pero exige wordlist o `--patron`. |
+| Comando       | Para qué sirve                                                           |
+| ------------- | ------------------------------------------------------------------------ |
+| **`romper`**  | **Encuentra la contraseña sin conocerla (wordlist + patrones).**         |
+| **`extrae`**  | **Descifra y vuelca el contenido** (rompe primero si hace falta).        |
+| `textoplano`  | Ataque de texto plano ZipCrypto (Biham-Kocher **nativo**).               |
+| **`rescata`** | **Obtiene contenido SIN contraseña** (entradas sin cifrar + CRC-32).     |
+| `formato`     | Identifica el formato (ZIP/7z/RAR/…) e indica cómo atacarlo.             |
+| `analiza`     | Cifrado, salt/verificador/auth y qué es obtenible sin contraseña.        |
+| `material`    | Emite el hash `$zip2$` para `hashcat -m 13600` / John `zip2john`.        |
+| `verifica`    | Prueba una única contraseña candidata contra el archivo.                 |
+| `busca`       | Búsqueda de bajo nivel: como `romper`, pero exige wordlist o `--patron`. |
 
 ```bash
 node ganzua.js analiza  archivo.zip

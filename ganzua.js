@@ -25,6 +25,7 @@ const zipcrypto = require('./lib/crypto-zipcrypto');
 const { recoverKeysParallel } = require('./lib/zipcrypto-attack-parallel');
 const native = require('./lib/native');
 const { extractEntries } = require('./lib/extract');
+const loot = require('./lib/loot');
 const formato = require('./lib/format');
 
 // Below this many candidates the worker-pool overhead is not worth it.
@@ -49,6 +50,8 @@ const FLAGS_WITH_VALUE = new Set([
   '--plano',
   '--plano-hex',
   '--offset',
+  '--charset',
+  '--maxbytes',
 ]);
 
 function parseArgs(argv) {
@@ -65,6 +68,7 @@ function parseArgs(argv) {
     else if (a === '--bkcrack') opts.bkcrack = true;
     else if (a === '--js') opts.js = true;
     else if (a === '--todas' || a === '--all') opts.todas = true;
+    else if (a === '--listar' || a === '--list') opts.listar = true;
     else if (a === '--help' || a === '-h') opts.help = true;
     else if (a === '--version' || a === '-v') opts.version = true;
     else if (FLAGS_WITH_VALUE.has(a)) {
@@ -690,6 +694,108 @@ async function cmdTextoPlano(positionals, opts) {
   return results.every((r) => r.ok) ? 0 : 1;
 }
 
+// Etiqueta legible del modo de obtención sin contraseña (ver lib/loot).
+function describeLoot(info) {
+  switch (info.modo) {
+    case 'plano':
+      return 'sin cifrar — lectura directa';
+    case 'vacio':
+      return 'vacía (0 B) — contenido conocido';
+    case 'crc':
+      return 'recuperable por CRC-32 (sin descifrar)';
+    case 'directorio':
+      return 'carpeta';
+    default:
+      return `requiere descifrar — ${info.motivo}`;
+  }
+}
+
+// `rescata` — obtiene sin contraseña TODO lo que el ZIP entrega sin descifrar:
+// entradas sin cifrar (lectura directa) y entradas pequeñas cuyo contenido se
+// reconstruye desde el CRC-32 en claro. No prueba ni una sola contraseña.
+async function cmdRescata(positionals, opts) {
+  const [file] = positionals;
+  if (!file) {
+    fail(
+      'uso: ganzua rescata <archivo.zip> [--salida dir] [--charset preset|chars] [--maxbytes N] [--listar] [--json]',
+    );
+  }
+  const zip = openZip(file);
+  const classifyOpts = {
+    charset: opts.charset,
+    maxBytes: opts.maxbytes !== undefined ? Number(opts.maxbytes) : undefined,
+  };
+  const plan = zip.entries.map((e) => ({ entry: e, info: loot.classify(e, classifyOpts) }));
+  const rescuable = plan.filter((p) => p.info.modo !== 'ninguno' && p.info.modo !== 'directorio');
+
+  // --listar (o --json --listar): solo el mapa, sin escribir nada.
+  if (opts.listar) {
+    if (opts.json) {
+      emitJson({
+        archivo: zip.path,
+        entradas: plan.map((p) => ({
+          indice: p.entry.index,
+          nombre: p.entry.name,
+          cifrado: p.entry.encryption,
+          tamano_original: p.entry.uncompressedSize,
+          modo: p.info.modo,
+          motivo: p.info.motivo,
+        })),
+        rescatables: rescuable.length,
+      });
+      return 0;
+    }
+    out(`ganzua · botín sin contraseña de ${path.basename(zip.path)}`);
+    for (const p of plan) {
+      out('');
+      out(`  [${p.entry.index}] ${p.entry.name}  (${p.entry.uncompressedSize} B)`);
+      out(`      ${describeLoot(p.info)}`);
+    }
+    out('');
+    out(`  ${rescuable.length}/${zip.entries.length} entradas obtenibles sin contraseña.`);
+    if (rescuable.length > 0) out('  Ejecuta sin --listar (y con --salida) para volcarlas.');
+    return 0;
+  }
+
+  const outDir = opts.salida || '.';
+  fs.mkdirSync(outDir, { recursive: true });
+  const results = await loot.rescue(zip, zip.entries, {
+    outDir,
+    charset: opts.charset,
+    maxBytes: classifyOpts.maxBytes,
+    onCrc: opts.json || !isTTY ? undefined : (entry) => process.stderr.write(`\r  CRC-32 «${entry.name}»…            `),
+    onProgress:
+      opts.json || !isTTY
+        ? undefined
+        : (d, t) => process.stderr.write(`\r  CRC-32… ${((d / t) * 100).toFixed(0)}%        `),
+  });
+  if (isTTY && !opts.json) process.stderr.write('\r' + ' '.repeat(40) + '\r');
+
+  const got = results.filter((r) => r.ok && !r.directorio);
+  if (opts.json) {
+    emitJson({ archivo: zip.path, salida: outDir, rescatadas: got.length, entradas: results });
+    return got.length > 0 ? 0 : 1;
+  }
+
+  out(`ganzua · rescate sin contraseña de ${path.basename(zip.path)}`);
+  for (const r of results) {
+    if (r.directorio) continue;
+    if (r.ok)
+      out(
+        `  ✔ ${r.nombre} (${r.bytes} B) · ${r.modo === 'crc' ? 'CRC-32' : r.modo === 'vacio' ? 'vacía' : 'sin cifrar'}`,
+      );
+    else if (r.modo === 'ninguno') out(`  · ${r.nombre} — ${r.error}`);
+    else out(`  ✗ ${r.nombre} — ${r.error}`);
+  }
+  if (got.length === 0) {
+    out('  Nada obtenible sin contraseña (todo requiere descifrar).');
+    out('  Prueba:  ganzua romper ' + path.basename(zip.path) + '   |   ganzua textoplano … (ZipCrypto)');
+    return 1;
+  }
+  out(`  rescatadas ${got.length} entradas en ${outDir} — sin descifrar nada.`);
+  return 0;
+}
+
 // `formato` — identifica el tipo de archivo por su firma e indica cómo atacarlo.
 function cmdFormato(positionals, opts) {
   const [file] = positionals;
@@ -723,6 +829,7 @@ function cmdAnaliza(positionals, opts) {
   const zip = openZip(file);
 
   const report = zip.entries.map((e) => {
+    const sinPass = loot.classify(e);
     const base = {
       indice: e.index,
       nombre: e.name,
@@ -730,6 +837,7 @@ function cmdAnaliza(positionals, opts) {
       metodo: methodName(e.method),
       tamano_comprimido: e.compressedSize,
       tamano_original: e.uncompressedSize,
+      sin_contrasena: sinPass.modo,
     };
     if (e.encryption === 'aes') {
       base.aes = {
@@ -760,6 +868,7 @@ function cmdAnaliza(positionals, opts) {
     out(`  [${e.indice}] ${e.nombre}`);
     out(`      cifrado: ${describeEncryption(zip.entries[e.indice])}`);
     out(`      tamaño:  ${e.tamano_original} B (comprimido ${e.tamano_comprimido} B)`);
+    out(`      sin contraseña: ${describeLoot(loot.classify(zip.entries[e.indice]))}`);
     if (e.aes) {
       out(`      salt:    ${e.aes.salt}`);
       out(`      verif.:  ${e.aes.verificador}   auth: ${e.aes.auth}`);
@@ -921,6 +1030,16 @@ OBTENER EL CONTENIDO
       --bkcrack              Usa bkcrack (si está en el PATH) en vez del motor
                              propio.
 
+  rescata <archivo.zip>      Obtiene SIN CONTRASEÑA lo que el ZIP entrega sin
+                             descifrar: entradas sin cifrar (lectura directa) y
+                             entradas pequeñas cuyo contenido se reconstruye
+                             desde el CRC-32 en claro. No prueba contraseñas.
+      --listar               Solo muestra el mapa (qué es obtenible), sin volcar.
+      --salida <dir>         Carpeta de salida (por defecto, la actual).
+      --charset <preset|chars>  Alfabeto para el CRC-32: digits, lower, upper,
+                             alnum, hex, print, o los caracteres literales.
+      --maxbytes <N>         Tamaño máximo de entrada a reconstruir por CRC-32.
+
 COMANDOS DE APOYO
   formato  <archivo>         Identifica el formato (ZIP/7z/RAR/…) y cómo atacarlo.
   analiza  <archivo.zip>     Detecta el cifrado y muestra salt/verificador.
@@ -967,6 +1086,7 @@ const COMMANDS = {
   romper: cmdRomper,
   extrae: cmdExtrae,
   textoplano: cmdTextoPlano,
+  rescata: cmdRescata,
   busca: cmdBusca,
   formato: cmdFormato,
   analiza: cmdAnaliza,
