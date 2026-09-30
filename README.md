@@ -37,6 +37,18 @@ $ node ganzua.js romper archivo.zip
     (7421 candidatas en 5.6 s)
 ```
 
+### Obtener el contenido
+
+`extrae` va un paso más allá: **descifra y vuelca los ficheros**. Si no le das la
+contraseña, la recupera primero (como `romper`) y luego extrae:
+
+```bash
+node ganzua.js extrae archivo.zip --salida ./salida           # rompe y extrae todo
+node ganzua.js extrae archivo.zip "Barcelona2024" --salida .  # con contraseña conocida
+```
+
+Verifica el CRC-32 de cada fichero y protege contra _path traversal_ (zip slip).
+
 Cuando no la encuentra con los valores por defecto:
 
 ```text
@@ -126,6 +138,7 @@ node ganzua.js romper archivo.zip --agresivo --checkpoint progreso.json  # reanu
 | Comando      | Para qué sirve                                                           |
 | ------------ | ------------------------------------------------------------------------ |
 | **`romper`** | **Encuentra la contraseña sin conocerla (wordlist + patrones).**         |
+| **`extrae`** | **Descifra y vuelca el contenido** (rompe primero si hace falta).        |
 | `analiza`    | Detecta el cifrado y muestra salt, verificador y auth por entrada.       |
 | `material`   | Emite el hash `$zip2$` para `hashcat -m 13600` / John `zip2john`.        |
 | `verifica`   | Prueba una única contraseña candidata contra el archivo.                 |

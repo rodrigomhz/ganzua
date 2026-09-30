@@ -20,6 +20,7 @@ const candidates = require('./lib/candidates');
 const checkpoint = require('./lib/checkpoint');
 const hashcat = require('./lib/hashcat');
 const aesCrypto = require('./lib/crypto-aes');
+const { extractEntries } = require('./lib/extract');
 
 // Below this many candidates the worker-pool overhead is not worth it.
 const PARALLEL_THRESHOLD = 4000;
@@ -38,6 +39,7 @@ const FLAGS_WITH_VALUE = new Set([
   '--entrada',
   '--hilos',
   '--checkpoint',
+  '--salida',
 ]);
 
 function parseArgs(argv) {
@@ -194,7 +196,10 @@ function planWorkers(entry, total, opts) {
   return requested;
 }
 
-async function runSearch(zip, entry, opts) {
+// Search core reusable by `romper`/`busca` (which print) and `extrae` (which
+// then extracts). Handles candidate stream, worker planning, checkpoint/resume
+// and SIGINT; returns the raw result object plus context.
+async function locatePassword(zip, entry, opts, { quiet = false } = {}) {
   const { stream, total, label } = buildCandidateStream(opts);
   const limit = opts.limite ? Number(opts.limite) : undefined;
   const workers = planWorkers(entry, total, opts);
@@ -207,14 +212,14 @@ async function runSearch(zip, entry, opts) {
     const cp = checkpoint.load(cpFile);
     if (cp && cp.firma === firma && cp.position > 0) {
       startAt = cp.position;
-      if (!opts.json) note(`  reanudando desde la candidata ${startAt} (checkpoint)`);
+      if (!quiet && !opts.json) note(`  reanudando desde la candidata ${startAt} (checkpoint)`);
     }
   }
   const onCheckpoint = cpFile
     ? (position) => checkpoint.save(cpFile, { firma, archivo: zip.path, entrada: entry.index, position, total })
     : undefined;
 
-  if (!opts.json) {
+  if (!quiet && !opts.json) {
     note(`ganzua · rompiendo ${path.basename(zip.path)}`);
     note(`  cifrado: ${describeEncryption(entry)} — entrada "${entry.name}"`);
     const paralelo = workers > 0 ? ` · ${workers} hilos` : '';
@@ -231,7 +236,7 @@ async function runSearch(zip, entry, opts) {
   };
   process.on('SIGINT', onSigint);
 
-  const onProgress = opts.json ? undefined : progressReporter(total);
+  const onProgress = quiet || opts.json ? undefined : progressReporter(total);
   const common = { onProgress, limit, startAt, signal: ac.signal, onCheckpoint };
   let result;
   try {
@@ -245,11 +250,22 @@ async function runSearch(zip, entry, opts) {
 
   if (isTTY && !opts.json) process.stderr.write('\r' + ' '.repeat(48) + '\r');
 
-  // Interrupted: persist progress and report a summary.
-  if (result.stopped) {
-    if (cpFile) {
+  if (cpFile) {
+    if (result.stopped) {
       checkpoint.save(cpFile, { firma, archivo: zip.path, entrada: entry.index, position: result.position, total });
+    } else {
+      checkpoint.remove(cpFile); // encontrada o agotada: ya no sirve
     }
+  }
+
+  return { result, total, cpFile };
+}
+
+async function runSearch(zip, entry, opts) {
+  const { result, cpFile } = await locatePassword(zip, entry, opts);
+
+  // Interrupted: report a summary (checkpoint already saved by locatePassword).
+  if (result.stopped) {
     const secs = (result.elapsedMs / 1000).toFixed(1);
     if (opts.json) {
       emitJson({
@@ -270,9 +286,6 @@ async function runSearch(zip, entry, opts) {
     }
     return 130;
   }
-
-  // Búsqueda terminada (encontrada o agotada): el checkpoint ya no sirve.
-  if (cpFile) checkpoint.remove(cpFile);
 
   if (opts.json) {
     const abre = result.found
@@ -456,6 +469,70 @@ async function cmdBusca(positionals, opts) {
   return crack(zip, entry, opts);
 }
 
+// `extrae` — descifra y vuelca el contenido. Con contraseña la usa; sin ella,
+// primero la recupera (como romper). Protege contra path traversal (zip slip).
+async function cmdExtrae(positionals, opts) {
+  const [file, passwordArg] = positionals;
+  if (!file) {
+    fail('uso: ganzua extrae <archivo.zip> [contraseña] [--salida dir] [--entrada N | --todas]');
+  }
+  const zip = openZip(file);
+  const outDir = opts.salida || '.';
+
+  // Entradas objetivo: por defecto, todas.
+  let targets;
+  if (opts.entrada !== undefined) {
+    const idx = Number(opts.entrada);
+    const e = zip.entries.find((x) => x.index === idx);
+    if (!e) fail(`no hay entrada con índice ${idx}`);
+    targets = [e];
+  } else {
+    targets = zip.entries;
+  }
+  if (targets.length === 0) fail('el ZIP no tiene entradas');
+
+  // Contraseña: la del argumento (verificada) o recuperada por fuerza bruta.
+  const encTargets = targets.filter((e) => e.encryption !== 'none');
+  let password = passwordArg;
+  if (encTargets.length > 0) {
+    if (password) {
+      if (!verify(encTargets[0], password)) {
+        fail(`contraseña incorrecta para "${encTargets[0].name}"`);
+      }
+    } else {
+      const { result } = await locatePassword(zip, encTargets[0], opts);
+      if (!result.found) {
+        if (opts.json) emitJson({ archivo: zip.path, encontrada: false, extraidas: 0 });
+        else note('  ✗ no se pudo recuperar la contraseña (prueba --wordlist/--agresivo o pásala como argumento)');
+        return 1;
+      }
+      password = result.password;
+      if (!opts.json) out(`  ✔ contraseña: «${password}»`);
+    }
+  }
+
+  fs.mkdirSync(outDir, { recursive: true });
+  const results = extractEntries(zip, targets, { password, outDir });
+  const okCount = results.filter((r) => r.ok).length;
+
+  if (opts.json) {
+    emitJson({
+      archivo: zip.path,
+      salida: outDir,
+      contrasena: password || null,
+      extraidas: okCount,
+      entradas: results,
+    });
+    return results.every((r) => r.ok) ? 0 : 1;
+  }
+  for (const r of results) {
+    if (r.ok) out(`  ✔ ${r.nombre}${r.directorio ? '' : ` (${r.bytes} B)`}`);
+    else out(`  ✗ ${r.nombre} — ${r.error}`);
+  }
+  out(`  extraídas ${okCount}/${results.length} entradas en ${outDir}`);
+  return results.every((r) => r.ok) ? 0 : 1;
+}
+
 function cmdAnaliza(positionals, opts) {
   const [file] = positionals;
   if (!file) fail('uso: ganzua analiza <archivo.zip> [--json]');
@@ -633,6 +710,13 @@ COMANDO PRINCIPAL
                              largas). Ctrl+C guarda y sale con un resumen.
       --json                 Salida JSON.
 
+OBTENER EL CONTENIDO
+  extrae <archivo.zip> [contraseña]
+                             Descifra y vuelca los ficheros. Si no das la
+                             contraseña, la recupera primero (como romper).
+      --salida <dir>         Carpeta de salida (por defecto, la actual).
+      --entrada N | --todas  Qué extraer (por defecto, todo).
+
 COMANDOS DE APOYO
   analiza  <archivo.zip>     Detecta el cifrado y muestra salt/verificador.
   material <archivo.zip>     Emite el hash "$zip2$" para hashcat -m 13600 / John.
@@ -676,6 +760,7 @@ pertenezcan o para los que no tengas permiso explícito.`);
 
 const COMMANDS = {
   romper: cmdRomper,
+  extrae: cmdExtrae,
   busca: cmdBusca,
   analiza: cmdAnaliza,
   material: cmdMaterial,
