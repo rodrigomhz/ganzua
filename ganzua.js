@@ -29,6 +29,7 @@ const { extractEntries } = require('./lib/extract');
 const loot = require('./lib/loot');
 const knownPlain = require('./lib/known-plaintext');
 const deflatePlain = require('./lib/deflate-plain');
+const probeLib = require('./lib/probe');
 const formato = require('./lib/format');
 
 // Below this many candidates the worker-pool overhead is not worth it.
@@ -56,6 +57,7 @@ const FLAGS_WITH_VALUE = new Set([
   '--charset',
   '--maxbytes',
   '--conocido',
+  '--bytes',
 ]);
 
 function parseArgs(argv) {
@@ -627,26 +629,10 @@ async function runPlainEngine(engine, { file, entry, ciphertext, cand, opts }) {
   });
 }
 
-// `textoplano` — ataque de texto plano conocido contra ZipCrypto (Biham-Kocher).
-// Recupera las claves internas y descifra/extrae todo el archivo sin la
-// contraseña, sea cual sea su longitud. El texto plano puede darse a mano
-// (--plano/--plano-hex), deducirse del tipo de fichero (--auto, cabeceras
-// conocidas para entradas STORE) o derivarse de una copia del contenido
-// (--conocido, que recomprime si la entrada es DEFLATE).
-async function cmdTextoPlano(positionals, opts) {
-  const [file] = positionals;
-  if (!file) {
-    fail(
-      'uso: ganzua textoplano <archivo.zip> [--entrada N] (--auto | --conocido <fichero> | --plano <fichero> | --plano-hex <hex> [--offset N]) [--salida dir]',
-    );
-  }
-  const zip = openZip(file);
-  const entry = resolveEntry(zip, opts);
-  if (entry.encryption !== 'zipcrypto') {
-    fail(`textoplano ataca ZipCrypto por texto plano conocido; "${entry.name}" es ${entry.encryption}`);
-  }
-
-  // Construir la lista ordenada de candidatos de texto plano del flujo cifrado.
+// Construye la lista ordenada de candidatos de texto plano para una entrada
+// ZipCrypto, según el modo elegido. Hace fail() con un mensaje claro si no hay
+// forma de obtener texto plano. Devuelve { candidatos, modoFuente }.
+function buildPlainCandidates(entry, opts) {
   const offsetArg = opts.offset !== undefined ? Number(opts.offset) : 0;
   const PLAIN_CAP = 4096; // recorte para candidatos automáticos (más que suficiente)
   let candidatos = [];
@@ -694,15 +680,21 @@ async function cmdTextoPlano(positionals, opts) {
   }
   candidatos = candidatos.filter((c) => c.plano.length >= ATTACK_SIZE);
   if (candidatos.length === 0) fail(`ningún candidato alcanza los ${ATTACK_SIZE} bytes mínimos del ataque`);
+  return { candidatos, modoFuente };
+}
 
-  const ciphertext = Buffer.concat([entry.crypto.header, entry.crypto.body]);
-  const engine = opts.bkcrack ? 'bkcrack' : native.available && !opts.js ? 'nativo C++' : 'JS';
-  if (opts.bkcrack && !bkcrack.isAvailable()) fail('bkcrack no está en el PATH (https://github.com/kimci86/bkcrack)');
-  if (!opts.json) {
-    note(`ganzua · ataque de texto plano (${engine}) sobre "${entry.name}" — ${candidatos.length} candidato(s)…`);
+// Elige el motor del ataque de texto plano según las opciones.
+function pickPlainEngine(opts) {
+  if (opts.bkcrack) {
+    if (!bkcrack.isAvailable()) fail('bkcrack no está en el PATH (https://github.com/kimci86/bkcrack)');
+    return 'bkcrack';
   }
+  return native.available && !opts.js ? 'nativo C++' : 'JS';
+}
 
-  const started = Date.now();
+// Bucle multi-candidato: prueba cada candidato con el motor y para en el primero
+// que recupera claves. Devuelve { keys, usado }.
+async function attackCandidates({ engine, file, entry, ciphertext, candidatos, opts }) {
   let keys = null;
   let usado = null;
   for (let i = 0; i < candidatos.length; i++) {
@@ -722,6 +714,37 @@ async function cmdTextoPlano(positionals, opts) {
     }
   }
   if (isTTY && !opts.json) process.stderr.write('\r' + ' '.repeat(48) + '\r');
+  return { keys, usado };
+}
+
+// `textoplano` — ataque de texto plano conocido contra ZipCrypto (Biham-Kocher).
+// Recupera las claves internas y descifra/extrae todo el archivo sin la
+// contraseña, sea cual sea su longitud. El texto plano puede darse a mano
+// (--plano/--plano-hex), deducirse del tipo de fichero (--auto, cabeceras
+// conocidas para entradas STORE) o derivarse de una copia del contenido
+// (--conocido, que recomprime si la entrada es DEFLATE).
+async function cmdTextoPlano(positionals, opts) {
+  const [file] = positionals;
+  if (!file) {
+    fail(
+      'uso: ganzua textoplano <archivo.zip> [--entrada N] (--auto | --conocido <fichero> | --plano <fichero> | --plano-hex <hex> [--offset N]) [--salida dir]',
+    );
+  }
+  const zip = openZip(file);
+  const entry = resolveEntry(zip, opts);
+  if (entry.encryption !== 'zipcrypto') {
+    fail(`textoplano ataca ZipCrypto por texto plano conocido; "${entry.name}" es ${entry.encryption}`);
+  }
+
+  const { candidatos, modoFuente } = buildPlainCandidates(entry, opts);
+  const ciphertext = Buffer.concat([entry.crypto.header, entry.crypto.body]);
+  const engine = pickPlainEngine(opts);
+  if (!opts.json) {
+    note(`ganzua · ataque de texto plano (${engine}) sobre "${entry.name}" — ${candidatos.length} candidato(s)…`);
+  }
+
+  const started = Date.now();
+  const { keys, usado } = await attackCandidates({ engine, file, entry, ciphertext, candidatos, opts });
   if (!keys) {
     const pista =
       modoFuente === 'auto'
@@ -758,6 +781,92 @@ async function cmdTextoPlano(positionals, opts) {
   }
   out(`  extraídas ${okCount}/${results.length} entradas en ${outDir}`);
   return results.every((r) => r.ok) ? 0 : 1;
+}
+
+// `sonda` — exporta un paquete diminuto (metadatos + un trozo del cifrado) de
+// una entrada ZipCrypto, para atacar un zip grande sin mover el archivo entero.
+// El JSON resultante (unos KB) se pega/sube y se ataca con `ataca-sonda`.
+function cmdSonda(positionals, opts) {
+  const [file] = positionals;
+  if (!file) fail('uso: ganzua sonda <archivo.zip> [--entrada N] [--bytes N] [--salida sonda.json]');
+  const zip = openZip(file);
+  // Entrada objetivo: la indicada, o la primera ZipCrypto.
+  const entry =
+    opts.entrada !== undefined ? resolveEntry(zip, opts) : zip.entries.find((e) => e.encryption === 'zipcrypto');
+  if (!entry) fail('el ZIP no contiene ninguna entrada ZipCrypto (la sonda de texto plano es para ZipCrypto)');
+
+  let probe;
+  try {
+    probe = probeLib.buildProbe(zip, entry, { bytes: opts.bytes !== undefined ? Number(opts.bytes) : undefined });
+  } catch (err) {
+    fail(err.message);
+  }
+  const jsonStr = JSON.stringify(probe, null, 2);
+  if (opts.salida) {
+    fs.writeFileSync(opts.salida, jsonStr);
+    note(
+      `sonda de "${entry.name}" escrita en ${opts.salida} (${jsonStr.length} B, ${probe.cuerpo_prefijo_bytes} B de cuerpo)`,
+    );
+  } else {
+    out(jsonStr);
+    note(`(sonda de "${entry.name}": ${jsonStr.length} B — pégala o súbela para atacarla con "ataca-sonda")`);
+  }
+  return 0;
+}
+
+// `ataca-sonda` — recupera las claves internas ZipCrypto desde una sonda
+// (sin el zip completo). Luego, en la máquina con el zip, se usa
+// `extrae --claves …` para descifrar todo sin contraseña.
+async function cmdAtacaSonda(positionals, opts) {
+  const [file] = positionals;
+  if (!file) {
+    fail(
+      'uso: ganzua ataca-sonda <sonda.json> (--auto | --conocido <fichero> | --plano-hex <hex> [--offset N]) [--js]',
+    );
+  }
+  let probe;
+  try {
+    probe = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    fail(`no se pudo leer la sonda: ${err.message}`);
+  }
+  let entry, ciphertext, archivo;
+  try {
+    ({ entry, ciphertext, archivo } = probeLib.fromProbe(probe));
+  } catch (err) {
+    fail(err.message);
+  }
+
+  if (opts.bkcrack) fail('bkcrack necesita el zip completo; con una sonda usa el motor nativo o --js');
+  const { candidatos } = buildPlainCandidates(entry, opts);
+  const engine = native.available && !opts.js ? 'nativo C++' : 'JS';
+  // El prefijo de la sonda debe cubrir offset + texto plano.
+  const falta = candidatos.find((c) => c.offset + c.plano.length > ciphertext.length);
+  if (falta) {
+    fail(
+      `la sonda es corta: el candidato "${falta.etiqueta}" necesita ${falta.offset + falta.plano.length} B de cifrado ` +
+        `y la sonda trae ${ciphertext.length}. Regenérala con --bytes ${falta.offset + falta.plano.length + 16}.`,
+    );
+  }
+  if (!opts.json)
+    note(`ganzua · ataque sobre sonda de "${entry.name}" (${engine}) — ${candidatos.length} candidato(s)…`);
+
+  const started = Date.now();
+  const { keys, usado } = await attackCandidates({ engine, file: null, entry, ciphertext, candidatos, opts });
+  if (!keys) fail(`no se recuperaron las claves tras ${candidatos.length} candidato(s) desde la sonda.`);
+
+  const secs = ((Date.now() - started) / 1000).toFixed(1);
+  const clavesHex = keys.map((k) => k.toString(16).padStart(8, '0'));
+  if (opts.json) {
+    emitJson({ sonda: archivo, entrada: entry.name, motor: engine, candidato: usado.etiqueta, claves: clavesHex });
+    return 0;
+  }
+  out(`  ✔ texto plano: ${usado.etiqueta}`);
+  out(`  ✔ claves ZipCrypto: ${clavesHex.join(' ')}  (${secs} s)`);
+  out('');
+  out('  En tu máquina (con el zip completo), descifra TODO sin contraseña:');
+  out(`    node ganzua.js extrae "${archivo}" --claves ${clavesHex.join(':')} --salida ./out`);
+  return 0;
 }
 
 // Etiqueta legible del modo de obtención sin contraseña (ver lib/loot).
@@ -1101,6 +1210,18 @@ OBTENER EL CONTENIDO
       --bkcrack              Usa bkcrack (si está en el PATH) en vez del motor
                              propio.
 
+  sonda <archivo.zip>        Exporta un paquete diminuto (metadatos + un trozo
+                             del cifrado) de una entrada ZipCrypto, para atacar
+                             un zip ENORME sin mover el archivo entero.
+      --entrada N            Entrada objetivo (por defecto, la primera ZipCrypto).
+      --bytes N              Bytes de cuerpo cifrado a incluir (por defecto 4096).
+      --salida <fichero>     Escribe la sonda a fichero (si no, a stdout).
+
+  ataca-sonda <sonda.json>   Recupera las claves ZipCrypto desde una sonda (sin
+                             el zip completo). Acepta --auto / --conocido /
+                             --plano-hex igual que textoplano. Luego usa
+                             "extrae --claves …" en la máquina con el zip.
+
   rescata <archivo.zip>      Obtiene SIN CONTRASEÑA lo que el ZIP entrega sin
                              descifrar: entradas sin cifrar (lectura directa) y
                              entradas pequeñas cuyo contenido se reconstruye
@@ -1157,6 +1278,8 @@ const COMMANDS = {
   romper: cmdRomper,
   extrae: cmdExtrae,
   textoplano: cmdTextoPlano,
+  sonda: cmdSonda,
+  'ataca-sonda': cmdAtacaSonda,
   rescata: cmdRescata,
   busca: cmdBusca,
   formato: cmdFormato,

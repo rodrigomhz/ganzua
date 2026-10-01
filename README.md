@@ -107,6 +107,26 @@ motor JS. Con `--js` fuerzas el motor JS aunque el addon esté disponible, y con
 `--bkcrack` delegas en `bkcrack` (si está en el `PATH`). Cuanto más texto plano
 conocido (de alta entropía) proporciones, más rápido converge el ataque.
 
+#### Atacar un ZIP enorme sin moverlo: la «sonda»
+
+El ataque de texto plano solo necesita la cabecera de cifrado (12 B) y un trozo
+del cuerpo. Así, un ZIP de **varios GB** (p. ej. con una máquina virtual) se
+puede atacar compartiendo apenas **unos KB**: exportas una _sonda_ en la máquina
+que tiene el archivo, la llevas a otra (o se la pasas a quien hace el ataque),
+se recuperan las claves y vuelves a descifrar el archivo entero en su sitio.
+
+```bash
+# 1) En la máquina con el ZIP: exporta la sonda (metadatos + un trozo cifrado).
+node ganzua.js sonda enorme.zip --bytes 4096 --salida sonda.json
+
+# 2) Donde se hace el ataque (sin el ZIP): recupera las claves desde la sonda.
+node ganzua.js ataca-sonda sonda.json --auto          # o --conocido / --plano-hex
+#    → claves ZipCrypto: a1b2c3d4 e5f6a7b8 c9d0e1f2
+
+# 3) De vuelta en la máquina con el ZIP: descifra TODO sin contraseña.
+node ganzua.js extrae enorme.zip --claves a1b2c3d4:e5f6a7b8:c9d0e1f2 --salida ./out
+```
+
 ### Sin descifrar nada: rescatar contenido sin contraseña
 
 Un ZIP filtra información aunque esté cifrado, y a veces **el contenido entero
@@ -271,6 +291,8 @@ qué usar en vez de fallar sin más.
 | **`romper`**  | **Encuentra la contraseña sin conocerla (wordlist + patrones).**         |
 | **`extrae`**  | **Descifra y vuelca el contenido** (rompe primero si hace falta).        |
 | `textoplano`  | Ataque de texto plano ZipCrypto (Biham-Kocher **nativo**).               |
+| `sonda`       | Exporta un paquete mínimo (KB) para atacar un ZIP enorme sin moverlo.    |
+| `ataca-sonda` | Recupera las claves ZipCrypto desde una sonda (sin el ZIP completo).     |
 | **`rescata`** | **Obtiene contenido SIN contraseña** (entradas sin cifrar + CRC-32).     |
 | `formato`     | Identifica el formato (ZIP/7z/RAR/…) e indica cómo atacarlo.             |
 | `analiza`     | Cifrado, salt/verificador/auth y qué es obtenible sin contraseña.        |
