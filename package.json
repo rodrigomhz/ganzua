@@ -7,6 +7,7 @@
   },
   "main": "ganzua.js",
   "scripts": {
+    "install": "node -e 0",
     "pretest": "node test/fixtures/generate.js",
     "test": "node --test test/*.test.js",
     "build:native": "node-gyp rebuild",
