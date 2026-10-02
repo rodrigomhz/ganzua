@@ -8,8 +8,15 @@
 // Comando principal:  romper   (encuentra la contraseña sin conocerla)
 // Comandos de apoyo:  analiza · material · verifica · busca
 
-const fs = require('fs');
 const os = require('os');
+
+// Agranda el threadpool de libuv ANTES de usar crypto, para paralelizar PBKDF2
+// (la verificación de contraseñas AES) en varios núcleos.
+if (!process.env.UV_THREADPOOL_SIZE) {
+  process.env.UV_THREADPOOL_SIZE = String(Math.min(Math.max(os.cpus().length || 4, 4), 16));
+}
+
+const fs = require('fs');
 const path = require('path');
 
 const { readZip, firstEncryptedEntry, ZipError, methodName } = require('./lib/zip');
@@ -842,17 +849,57 @@ async function atacaSondaRomper(reco, opts) {
   }
 
   const limit = opts.limite ? Number(opts.limite) : undefined;
+  const tick = (n) => {
+    if (!opts.json && isTTY && n % 5000 === 0) process.stderr.write(`\r  ${n} candidatas…   `);
+  };
   const started = Date.now();
   let found = null;
   let tried = 0;
-  for (const c of stream) {
-    tried++;
-    if (probeLib.verifyFromProbe(reco, c, { encoding })) {
-      found = c;
-      break;
+
+  if (entry.encryption === 'aes') {
+    // AES: PBKDF2 es el cuello de botella -> verificación en paralelo sobre el
+    // threadpool, en lotes del tamaño de la concurrencia.
+    const conc = Math.min(Math.max(os.cpus().length || 4, 4), 16);
+    let batch = [];
+    const runBatch = async () => {
+      const oks = await Promise.all(
+        batch.map((p) => aesCrypto.verifyPasswordAsync(entry.crypto, p, { fast: true, encoding })),
+      );
+      for (let i = 0; i < oks.length; i++) {
+        tried++;
+        if (oks[i]) return batch[i];
+        if (limit && tried >= limit) return null;
+      }
+      tick(tried);
+      return undefined; // sigue
+    };
+    for (const c of stream) {
+      batch.push(c);
+      if (batch.length >= conc) {
+        const r = await runBatch();
+        batch = [];
+        if (r !== undefined) {
+          found = r;
+          break;
+        }
+        if (limit && tried >= limit) break;
+      }
     }
-    if (limit && tried >= limit) break;
-    if (!opts.json && isTTY && tried % 5000 === 0) process.stderr.write(`\r  ${tried} candidatas…   `);
+    if (!found && batch.length && !(limit && tried >= limit)) {
+      const r = await runBatch();
+      if (r) found = r;
+    }
+  } else {
+    // ZipCrypto: el check byte es microsegundos -> bucle síncrono.
+    for (const c of stream) {
+      tried++;
+      if (probeLib.verifyFromProbe(reco, c, { encoding })) {
+        found = c;
+        break;
+      }
+      if (limit && tried >= limit) break;
+      tick(tried);
+    }
   }
   if (isTTY && !opts.json) process.stderr.write('\r' + ' '.repeat(40) + '\r');
   const ms = Date.now() - started;
