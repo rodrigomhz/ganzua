@@ -1,0 +1,52 @@
+{
+  "name": "ganzua",
+  "version": "0.1.0",
+  "description": "Recuperación de contraseñas de archivos ZIP cifrados (WinZip AES-256 y ZipCrypto) para archivos propios o autorizados. Comando principal: romper.",
+  "bin": {
+    "ganzua": "ganzua.js"
+  },
+  "main": "ganzua.js",
+  "scripts": {
+    "install": "node -e 0",
+    "pretest": "node test/fixtures/generate.js",
+    "test": "node --test test/*.test.js",
+    "build:native": "node-gyp rebuild",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "coverage": "node test/fixtures/generate.js && c8 --reporter=text --reporter=lcov node --test test/*.test.js",
+    "romper": "node ganzua.js romper"
+  },
+  "keywords": [
+    "zip",
+    "aes",
+    "winzip",
+    "zipcrypto",
+    "password-recovery",
+    "forensics",
+    "hashcat",
+    "cli"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "ganzua.js",
+    "lib/",
+    "data/",
+    "native/",
+    "binding.gyp"
+  ],
+  "devDependencies": {
+    "c8": "^10.1.3",
+    "eslint": "^9.39.5",
+    "node-addon-api": "^8.9.2",
+    "node-gyp": "^13.0.2",
+    "prettier": "^3.9.9"
+  },
+  "dependencies": {
+    "lzma": "^2.3.2",
+    "seek-bzip": "^2.0.0"
+  }
+}
