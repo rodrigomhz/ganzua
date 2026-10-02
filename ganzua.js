@@ -76,6 +76,7 @@ function parseArgs(argv) {
     else if (a === '--todas' || a === '--all') opts.todas = true;
     else if (a === '--listar' || a === '--list') opts.listar = true;
     else if (a === '--auto') opts.auto = true;
+    else if (a === '--romper') opts.romper = true;
     else if (a === '--help' || a === '-h') opts.help = true;
     else if (a === '--version' || a === '-v') opts.version = true;
     else if (FLAGS_WITH_VALUE.has(a)) {
@@ -784,16 +785,21 @@ async function cmdTextoPlano(positionals, opts) {
 }
 
 // `sonda` — exporta un paquete diminuto (metadatos + un trozo del cifrado) de
-// una entrada ZipCrypto, para atacar un zip grande sin mover el archivo entero.
+// una entrada cifrada, para atacar un zip grande sin mover el archivo entero.
 // El JSON resultante (unos KB) se pega/sube y se ataca con `ataca-sonda`.
 function cmdSonda(positionals, opts) {
   const [file] = positionals;
   if (!file) fail('uso: ganzua sonda <archivo.zip> [--entrada N] [--bytes N] [--salida sonda.json]');
   const zip = openZip(file);
-  // Entrada objetivo: la indicada, o la primera ZipCrypto.
+  // Entrada objetivo: la indicada, o la cifrada más pequeña (más probable que
+  // el cuerpo entre entero en el prefijo -> verificación definitiva).
   const entry =
-    opts.entrada !== undefined ? resolveEntry(zip, opts) : zip.entries.find((e) => e.encryption === 'zipcrypto');
-  if (!entry) fail('el ZIP no contiene ninguna entrada ZipCrypto (la sonda de texto plano es para ZipCrypto)');
+    opts.entrada !== undefined
+      ? resolveEntry(zip, opts)
+      : encryptedEntries(zip)
+          .slice()
+          .sort((a, b) => a.compressedSize - b.compressedSize)[0];
+  if (!entry) fail('el ZIP no contiene entradas cifradas (la sonda es para entradas cifradas)');
 
   let probe;
   try {
@@ -814,14 +820,93 @@ function cmdSonda(positionals, opts) {
   return 0;
 }
 
-// `ataca-sonda` — recupera las claves internas ZipCrypto desde una sonda
-// (sin el zip completo). Luego, en la máquina con el zip, se usa
-// `extrae --claves …` para descifrar todo sin contraseña.
+// Recuperación de la CONTRASEÑA desde una sonda (ZipCrypto o AES), sin el zip
+// completo. Reutiliza el generador de candidatas de `romper`.
+async function atacaSondaRomper(reco, opts) {
+  const { entry, archivo, cuerpoCompleto } = reco;
+  const encoding = opts.cp437 ? 'cp437' : 'utf8';
+  const cifrado =
+    entry.encryption === 'aes'
+      ? `WinZip AES-${aesCrypto.STRENGTH[entry.crypto.strength]?.bits ?? '?'}`
+      : `ZipCrypto (${methodName(entry.method)})`;
+  const { stream, total, label } = buildCandidateStream(opts);
+  const confianza =
+    entry.encryption === 'aes'
+      ? 'verificador AES (2 bytes)'
+      : cuerpoCompleto
+        ? 'CRC-32 (definitiva)'
+        : 'check byte + prefijo';
+  if (!opts.json) {
+    note(`ganzua · romper contraseña desde sonda de "${entry.name}" (${cifrado})`);
+    note(`  probando ${label}${total ? ` (~${total} candidatas)` : ''} · confirma por ${confianza}…`);
+  }
+
+  const limit = opts.limite ? Number(opts.limite) : undefined;
+  const started = Date.now();
+  let found = null;
+  let tried = 0;
+  for (const c of stream) {
+    tried++;
+    if (probeLib.verifyFromProbe(reco, c, { encoding })) {
+      found = c;
+      break;
+    }
+    if (limit && tried >= limit) break;
+    if (!opts.json && isTTY && tried % 5000 === 0) process.stderr.write(`\r  ${tried} candidatas…   `);
+  }
+  if (isTTY && !opts.json) process.stderr.write('\r' + ' '.repeat(40) + '\r');
+  const ms = Date.now() - started;
+  const secs = (ms / 1000).toFixed(1);
+
+  if (!found) {
+    if (opts.json) {
+      emitJson({
+        sonda: archivo,
+        entrada: entry.name,
+        cifrado: entry.encryption,
+        encontrada: false,
+        candidatas: tried,
+        ms,
+      });
+      return 1;
+    }
+    note(`  ✗ no encontrada (${tried} candidatas en ${secs} s)`);
+    note('  Prueba:  --wordlist grande.txt | --agresivo | --reglas | --patron "..." | --mascara "..."');
+    if (entry.encryption === 'aes')
+      note('  (AES es lento por candidata; para fuerza bruta grande usa GPU/hashcat con `material`.)');
+    return 1;
+  }
+
+  if (opts.json) {
+    emitJson({
+      sonda: archivo,
+      entrada: entry.name,
+      cifrado: entry.encryption,
+      encontrada: true,
+      contrasena: found,
+      candidatas: tried,
+      ms,
+      confianza,
+    });
+    return 0;
+  }
+  out(`  ✔ CONTRASEÑA ENCONTRADA: «${found}»  (${tried} candidatas en ${secs} s)`);
+  out(`    confirmación: ${confianza}`);
+  out('');
+  out('  En tu máquina (con el zip completo), ábrelo:');
+  out(`    node ganzua.js extrae "${archivo}" "${found}" --salida ./out`);
+  return 0;
+}
+
+// `ataca-sonda` — desde una sonda (sin el zip completo): con --romper recupera
+// la CONTRASEÑA (ZipCrypto o AES); por defecto, el ataque de texto plano
+// ZipCrypto recupera las claves internas. Luego, en la máquina con el zip, se
+// usa `extrae` (con la contraseña o con --claves) para descifrar todo.
 async function cmdAtacaSonda(positionals, opts) {
   const [file] = positionals;
   if (!file) {
     fail(
-      'uso: ganzua ataca-sonda <sonda.json> (--auto | --conocido <fichero> | --plano-hex <hex> [--offset N]) [--js]',
+      'uso: ganzua ataca-sonda <sonda.json> (--romper [--wordlist f] [--patron p] [--mascara m] | --auto | --conocido <fichero> | --plano-hex <hex> [--offset N]) [--js]',
     );
   }
   let probe;
@@ -830,13 +915,23 @@ async function cmdAtacaSonda(positionals, opts) {
   } catch (err) {
     fail(`no se pudo leer la sonda: ${err.message}`);
   }
-  let entry, ciphertext, archivo;
+  let reco;
   try {
-    ({ entry, ciphertext, archivo } = probeLib.fromProbe(probe));
+    reco = probeLib.fromProbe(probe);
   } catch (err) {
     fail(err.message);
   }
+  const { entry, ciphertext, archivo } = reco;
 
+  // Recuperación de contraseña (ZipCrypto o AES).
+  if (opts.romper) return atacaSondaRomper(reco, opts);
+
+  // Ataque de texto plano (solo ZipCrypto).
+  if (entry.encryption !== 'zipcrypto') {
+    fail(
+      `el ataque de texto plano es para ZipCrypto; esta sonda es ${entry.encryption}. Usa --romper para la contraseña.`,
+    );
+  }
   if (opts.bkcrack) fail('bkcrack necesita el zip completo; con una sonda usa el motor nativo o --js');
   const { candidatos } = buildPlainCandidates(entry, opts);
   const engine = native.available && !opts.js ? 'nativo C++' : 'JS';
@@ -1211,15 +1306,18 @@ OBTENER EL CONTENIDO
                              propio.
 
   sonda <archivo.zip>        Exporta un paquete diminuto (metadatos + un trozo
-                             del cifrado) de una entrada ZipCrypto, para atacar
-                             un zip ENORME sin mover el archivo entero.
-      --entrada N            Entrada objetivo (por defecto, la primera ZipCrypto).
+                             del cifrado) de una entrada cifrada (ZipCrypto o
+                             AES), para atacar un zip ENORME sin mover el archivo.
+      --entrada N            Entrada objetivo (por defecto, la cifrada más pequeña).
       --bytes N              Bytes de cuerpo cifrado a incluir (por defecto 4096).
       --salida <fichero>     Escribe la sonda a fichero (si no, a stdout).
 
-  ataca-sonda <sonda.json>   Recupera las claves ZipCrypto desde una sonda (sin
-                             el zip completo). Acepta --auto / --conocido /
-                             --plano-hex igual que textoplano. Luego usa
+  ataca-sonda <sonda.json>   Ataca desde una sonda, sin el zip completo:
+      --romper               Recupera la CONTRASEÑA (ZipCrypto o AES). Acepta
+                             --wordlist/--patron/--mascara/--agresivo/--reglas/
+                             --cp437 igual que "romper". Luego: extrae <zip> <clave>.
+      --auto | --conocido <f> | --plano-hex <hex>   Ataque de texto plano
+                             ZipCrypto (recupera las claves). Luego usa
                              "extrae --claves …" en la máquina con el zip.
 
   rescata <archivo.zip>      Obtiene SIN CONTRASEÑA lo que el ZIP entrega sin

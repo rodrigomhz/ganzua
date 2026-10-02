@@ -109,23 +109,41 @@ conocido (de alta entropía) proporciones, más rápido converge el ataque.
 
 #### Atacar un ZIP enorme sin moverlo: la «sonda»
 
-El ataque de texto plano solo necesita la cabecera de cifrado (12 B) y un trozo
-del cuerpo. Así, un ZIP de **varios GB** (p. ej. con una máquina virtual) se
-puede atacar compartiendo apenas **unos KB**: exportas una _sonda_ en la máquina
-que tiene el archivo, la llevas a otra (o se la pasas a quien hace el ataque),
-se recuperan las claves y vuelves a descifrar el archivo entero en su sitio.
+Para atacar un ZIP solo hace falta la cabecera de cifrado y un trozo del cuerpo,
+no el archivo entero. Así, un ZIP de **varios GB** (una máquina virtual, un
+examen con vídeos…) se ataca compartiendo apenas **unos KB**: exportas una
+_sonda_ en la máquina que tiene el archivo, la llevas a otra (o se la pasas a
+quien hace el ataque) y, con el resultado, descifras el archivo entero en su
+sitio. La sonda vale para **ZipCrypto y WinZip AES**.
+
+**Recuperar la contraseña (ZipCrypto o AES):**
 
 ```bash
 # 1) En la máquina con el ZIP: exporta la sonda (metadatos + un trozo cifrado).
+node ganzua.js sonda enorme.zip --salida sonda.json
+
+# 2) Sin el ZIP: recupera la contraseña desde la sonda (como `romper`).
+node ganzua.js ataca-sonda sonda.json --romper            # + --wordlist/--patron/--mascara…
+#    → CONTRASEÑA ENCONTRADA: «…»
+
+# 3) En la máquina con el ZIP: ábrelo con esa contraseña.
+node ganzua.js extrae enorme.zip "la-contraseña" --salida ./out
+```
+
+**O, para ZipCrypto, recuperar las claves internas por texto plano** (no hace
+falta la contraseña, sea cual sea su longitud):
+
+```bash
 node ganzua.js sonda enorme.zip --bytes 4096 --salida sonda.json
-
-# 2) Donde se hace el ataque (sin el ZIP): recupera las claves desde la sonda.
-node ganzua.js ataca-sonda sonda.json --auto          # o --conocido / --plano-hex
+node ganzua.js ataca-sonda sonda.json --auto              # o --conocido / --plano-hex
 #    → claves ZipCrypto: a1b2c3d4 e5f6a7b8 c9d0e1f2
-
-# 3) De vuelta en la máquina con el ZIP: descifra TODO sin contraseña.
 node ganzua.js extrae enorme.zip --claves a1b2c3d4:e5f6a7b8:c9d0e1f2 --salida ./out
 ```
+
+La verificación de la contraseña desde la sonda es definitiva cuando el cuerpo
+de la entrada cabe entero en el prefijo (CRC-32); si no, usa el check byte más
+una validación del flujo (DEFLATE/BZIP2/LZMA) o, en AES, el verificador de 2
+bytes — en todo caso el descifrado final del archivo completo lo confirma.
 
 ### Sin descifrar nada: rescatar contenido sin contraseña
 
@@ -292,7 +310,7 @@ qué usar en vez de fallar sin más.
 | **`extrae`**  | **Descifra y vuelca el contenido** (rompe primero si hace falta).        |
 | `textoplano`  | Ataque de texto plano ZipCrypto (Biham-Kocher **nativo**).               |
 | `sonda`       | Exporta un paquete mínimo (KB) para atacar un ZIP enorme sin moverlo.    |
-| `ataca-sonda` | Recupera las claves ZipCrypto desde una sonda (sin el ZIP completo).     |
+| `ataca-sonda` | Desde una sonda: `--romper` la contraseña (ZipCrypto/AES) o las claves.  |
 | **`rescata`** | **Obtiene contenido SIN contraseña** (entradas sin cifrar + CRC-32).     |
 | `formato`     | Identifica el formato (ZIP/7z/RAR/…) e indica cómo atacarlo.             |
 | `analiza`     | Cifrado, salt/verificador/auth y qué es obtenible sin contraseña.        |

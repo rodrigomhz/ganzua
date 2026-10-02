@@ -13,7 +13,21 @@ const path = require('node:path');
 
 const { readZip } = require('../lib/zip');
 const probeLib = require('../lib/probe');
-const { runCli } = require('./helpers');
+const { runCli, makeAesZip } = require('./helpers');
+
+const hasPyzipper = (() => {
+  try {
+    return cp.spawnSync('python3', ['-c', 'import pyzipper']).status === 0;
+  } catch {
+    return false;
+  }
+})();
+
+function wordlistWith(dir, password) {
+  const w = path.join(dir, 'words.txt');
+  fs.writeFileSync(w, ['x', '123456', password, 'y'].join('\n') + '\n');
+  return w;
+}
 
 const hasZip = (() => {
   try {
@@ -35,7 +49,19 @@ function makeZipcryptoStore(dir, name, content, password) {
 test('fromProbe rechaza sondas inválidas', () => {
   assert.throws(() => probeLib.fromProbe(null), /sonda no reconocida/);
   assert.throws(() => probeLib.fromProbe({ sonda: 999 }), /sonda no reconocida/);
-  assert.throws(() => probeLib.fromProbe({ sonda: 1, cabecera_hex: 'aabb', cuerpo_prefijo_hex: 'ccdd' }), /12 bytes/);
+  // ZipCrypto con cabecera que no mide 12 bytes.
+  assert.throws(
+    () =>
+      probeLib.fromProbe({
+        sonda: 1,
+        entrada: { cifrado: 'zipcrypto' },
+        cabecera_hex: 'aabb',
+        cuerpo_prefijo_hex: 'ccdd',
+      }),
+    /12 bytes/,
+  );
+  // Cifrado no soportado / ausente.
+  assert.throws(() => probeLib.fromProbe({ sonda: 1, entrada: {}, cuerpo_prefijo_hex: 'ccdd' }), /no soportado/);
 });
 
 test('buildProbe → fromProbe conserva cabecera y prefijo', { skip: skipZip }, () => {
@@ -74,6 +100,65 @@ test('CLI `sonda --json` emite un paquete pequeño y parseable', { skip: skipZip
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('romper: recupera la contraseña desde una sonda ZipCrypto DEFLATE', { skip: skipZip }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gz-probe-r1-'));
+  try {
+    const PASS = 'Examen_Web_2024';
+    // Fichero que comprime (DEFLATE) y contraseña cualquiera.
+    fs.writeFileSync(
+      path.join(dir, 'index.html'),
+      '<!DOCTYPE html>\n<html><body>' + 'hola '.repeat(50) + '</body></html>\n',
+    );
+    const zipPath = path.join(dir, 'web.zip');
+    assert.strictEqual(
+      cp.spawnSync('zip', ['-q', '-e', '-j', '-P', PASS, zipPath, path.join(dir, 'index.html')]).status,
+      0,
+    );
+
+    // Sonda con solo 40 B de cuerpo (prefijo DEFLATE).
+    const sonda = path.join(dir, 's.json');
+    assert.strictEqual(runCli(['sonda', zipPath, '--bytes', '40', '--salida', sonda]).status, 0);
+
+    const res = runCli(['ataca-sonda', sonda, '--romper', '--wordlist', wordlistWith(dir, PASS), '--json']);
+    assert.strictEqual(res.status, 0, res.stderr);
+    const out = JSON.parse(res.stdout);
+    assert.strictEqual(out.encontrada, true);
+    assert.strictEqual(out.contrasena, PASS);
+    assert.strictEqual(out.cifrado, 'zipcrypto');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test(
+  'romper: recupera la contraseña desde una sonda WinZip AES',
+  { skip: hasPyzipper ? false : 'requiere pyzipper' },
+  () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gz-probe-r2-'));
+    try {
+      const PASS = 'Clave_AES_42';
+      const zipPath = makeAesZip({
+        dir,
+        file: 'aes.zip',
+        entry: 'doc.txt',
+        content: 'contenido del examen\n',
+        password: PASS,
+      });
+      const sonda = path.join(dir, 's.json');
+      assert.strictEqual(runCli(['sonda', zipPath, '--salida', sonda]).status, 0);
+
+      const res = runCli(['ataca-sonda', sonda, '--romper', '--wordlist', wordlistWith(dir, PASS), '--json']);
+      assert.strictEqual(res.status, 0, res.stderr);
+      const out = JSON.parse(res.stdout);
+      assert.strictEqual(out.encontrada, true);
+      assert.strictEqual(out.contrasena, PASS);
+      assert.strictEqual(out.cifrado, 'aes');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 // e2e (lento): atacar SOLO la sonda (cabecera + prefijo) recupera las claves
 // internas correctas, idénticas a las que derivan de la contraseña. Usa el
