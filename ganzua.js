@@ -99,7 +99,32 @@ function parseArgs(argv) {
       positionals.push(a);
     }
   }
+  validateNumericFlags(opts);
   return { positionals, opts };
+}
+
+// Opciones que deben ser enteros. `--offset` admite negativos (el texto plano
+// puede empezar antes del cuerpo); el resto son no negativos. Se valida aquí
+// para dar un error claro en vez de un NaN silencioso aguas abajo.
+const NUMERIC_FLAGS = {
+  limite: false,
+  entrada: false,
+  hilos: false,
+  bytes: false,
+  maxbytes: false,
+  offset: true, // allowNegative
+};
+
+function validateNumericFlags(opts) {
+  for (const [key, allowNeg] of Object.entries(NUMERIC_FLAGS)) {
+    if (opts[key] === undefined) continue;
+    const raw = String(opts[key]).trim();
+    const re = allowNeg ? /^-?\d+$/ : /^\d+$/;
+    if (!re.test(raw)) {
+      fail(`la opción --${key} debe ser un número entero${allowNeg ? '' : ' no negativo'} (recibido "${opts[key]}")`);
+    }
+    opts[key] = raw;
+  }
 }
 
 function fail(msg, code = 2) {
