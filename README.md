@@ -226,6 +226,10 @@ Los patrones se siguen aplicando sobre las palabras de tu wordlist. Para listas
 grandes de calidad, [SecLists](https://github.com/danielmiessler/SecLists)
 (licencia MIT) es un buen punto de partida.
 
+La wordlist de `--wordlist` se lee **en streaming** (línea a línea, memoria
+constante), así que listas enormes (rockyou y mayores, de cientos de MB o GB) no
+agotan la RAM. `--patron` sí la carga en memoria, porque indexa las palabras.
+
 ### Patrones a medida
 
 `--patron` genera candidatas desde una plantilla con marcadores:

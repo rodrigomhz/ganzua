@@ -183,7 +183,6 @@ function resolveEntry(zip, opts) {
 // ---------------------------------------------------------------------------
 
 function buildCandidateStream(opts) {
-  const words = opts.wordlist ? candidates.loadWordlist(opts.wordlist) : undefined;
   if (opts.mascara) {
     let total;
     try {
@@ -198,21 +197,31 @@ function buildCandidateStream(opts) {
     };
   }
   if (opts.patron) {
+    // `--patron` indexa la wordlist (acceso aleatorio) -> en memoria.
+    const words = opts.wordlist ? candidates.loadWordlist(opts.wordlist) : undefined;
     return {
       stream: candidates.patternCandidates(opts.patron, { words, aggressive: opts.agresivo }),
       total: null,
       label: `patrón "${opts.patron}"`,
     };
   }
-  const total = candidates.estimateCount({ words, aggressive: opts.agresivo, rules: opts.reglas });
+  // romper/busca: la wordlist se recorre en pasadas secuenciales -> se puede
+  // transmitir con memoria constante (wordSource rebobinable). Así una wordlist
+  // enorme (rockyou y mayores) no agota la RAM.
   const extra = `${opts.agresivo ? ' (agresivo)' : ''}${opts.reglas ? ' + reglas' : ''}`;
-  const label = opts.wordlist
-    ? `wordlist ${path.basename(opts.wordlist)} + patrones${extra}`
-    : `wordlist común + patrones típicos${extra}`;
+  if (opts.wordlist) {
+    const words = candidates.wordSource(opts.wordlist);
+    return {
+      stream: candidates.romperCandidates({ words, aggressive: opts.agresivo, rules: opts.reglas }),
+      total: null, // no se preestima para no leer entera la wordlist grande
+      label: `wordlist ${path.basename(opts.wordlist)} (streaming) + patrones${extra}`,
+    };
+  }
+  const total = candidates.estimateCount({ aggressive: opts.agresivo, rules: opts.reglas });
   return {
-    stream: candidates.romperCandidates({ words, aggressive: opts.agresivo, rules: opts.reglas }),
+    stream: candidates.romperCandidates({ aggressive: opts.agresivo, rules: opts.reglas }),
     total,
-    label,
+    label: `wordlist común + patrones típicos${extra}`,
   };
 }
 
