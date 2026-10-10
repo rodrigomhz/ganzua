@@ -1373,7 +1373,7 @@ OBTENER EL CONTENIDO
                              descifra TODO sin la contraseña, sea cual sea.
       --auto                 Deduce el texto plano por el tipo de fichero
                              (cabeceras conocidas: OVF/OVA/VMDK/VDI/VHD/QCOW2,
-                             PNG, OOXML…). Solo para entradas STORE.
+                             HTML/SVG, PNG, OOXML…). Solo para entradas STORE.
       --conocido <fichero>   Usa una copia del contenido sin comprimir; si la
                              entrada es DEFLATE lo recomprime a varios niveles.
       --plano <fichero>      Texto plano conocido (≥12 bytes, 8 contiguos) del

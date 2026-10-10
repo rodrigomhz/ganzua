@@ -83,7 +83,7 @@ node ganzua.js textoplano archivo.zip --entrada 0 --conocido copia_del_fichero -
 ```
 
 `--auto` cubre cabeceras de **máquinas virtuales** (OVF/OVA, VMDK, VDI, VHD,
-QCOW2) y otros formatos (PNG, OOXML…). Solo aplica a entradas **STORE** (sin
+QCOW2), **ficheros web** (HTML, SVG, XHTML) y otros formatos (PNG, OOXML…). Solo aplica a entradas **STORE** (sin
 comprimir): ahí la cabecera en claro es texto plano del flujo cifrado. Como
 suele aportar pocos bytes (12–40), el ataque es más lento; si tienes una copia
 del contenido, `--conocido` da más texto plano y va más rápido.

@@ -42,6 +42,16 @@ test('candidatesForEntry: extensión desconocida => sin candidatos', () => {
   assert.deepStrictEqual(kp.candidatesForEntry({ name: 'x.desconocido', method: 0 }), []);
 });
 
+test('candidatesForEntry: ficheros web (html/svg) por extensión', () => {
+  const html = kp.candidatesForEntry({ name: 'index.html', method: 0 });
+  assert.ok(html.some((c) => c.plano.toString('latin1') === '<!DOCTYPE html>'));
+  assert.ok(html.some((c) => c.plano.toString('latin1') === '<!doctype html>'));
+
+  const svg = kp.candidatesForEntry({ name: 'logo.svg', method: 0 });
+  assert.ok(svg.some((c) => c.plano.toString('latin1').startsWith('<svg xmlns=')));
+  assert.ok(svg.some((c) => c.plano.toString('latin1').startsWith('<?xml')));
+});
+
 test('deflateVariants recomprime y una variante casa con el flujo real', () => {
   const contenido = Buffer.from('contenido de un fichero que sí comprime '.repeat(8));
   const real = zlib.deflateRawSync(contenido, { level: 6 });
