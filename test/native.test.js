@@ -67,3 +67,37 @@ test(
     }
   },
 );
+
+// e2e CLI rápido: con mucho texto plano (4000 B en STORE) la reducción deja
+// pocas candidatas Z y el ataque —con el check byte antepuesto en offset -1—
+// recupera las claves en segundos y extrae el contenido idéntico.
+test(
+  'e2e CLI: textoplano --plano (con check byte) descifra sin la contraseña',
+  { skip: !native.available || !hasZip ? 'requiere addon compilado y `zip`' : false },
+  () => {
+    const { runCli } = require('./helpers');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gz-native-cli-'));
+    try {
+      let text = '';
+      for (let i = 0; text.length < 4000; i++) text += `linea ${i} del informe de prueba\n`;
+      const src = path.join(dir, 'informe.txt');
+      fs.writeFileSync(src, text.slice(0, 4000));
+      const zipPath = path.join(dir, 'fuerte.zip');
+      const r = cp.spawnSync('zip', ['-q', '-0', '-e', '-j', '-P', 'Q7#vLm2!pX9zR4tW', zipPath, src]);
+      assert.strictEqual(r.status, 0, 'zip debe crear el fixture');
+
+      const out = path.join(dir, 'out');
+      const res = runCli(['textoplano', zipPath, '--plano', src, '--salida', out, '--json']);
+      assert.strictEqual(res.status, 0, res.stderr);
+      const j = JSON.parse(res.stdout);
+      const exp = new zc.Keys('Q7#vLm2!pX9zR4tW');
+      assert.deepStrictEqual(
+        j.claves,
+        [exp.k0, exp.k1, exp.k2].map((k) => (k >>> 0).toString(16).padStart(8, '0')),
+      );
+      assert.strictEqual(fs.readFileSync(path.join(out, 'informe.txt'), 'utf8'), text.slice(0, 4000));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);

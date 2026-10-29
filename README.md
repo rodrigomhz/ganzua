@@ -88,6 +88,19 @@ comprimir): ahí la cabecera en claro es texto plano del flujo cifrado. Como
 suele aportar pocos bytes (12–40), el ataque es más lento; si tienes una copia
 del contenido, `--conocido` da más texto plano y va más rápido.
 
+Sin `--entrada`, `--auto` revisa **todas** las entradas y ataca primero la que
+tiene más bytes conocidos: las claves internas recuperadas valen para todo el
+zip, así que basta la entrada más favorable (p. ej. un `logo.svg` con 39 B en
+vez de un `index.html` con 15 B). Además, los motores propios añaden como texto
+plano el _check byte_ de la cabecera de cifrado (un byte más, como bkcrack).
+
+| Texto plano conocido      | Candidatas Z |  Tiempo (4 núcleos, peor caso) |
+| ------------------------- | -----------: | -----------------------------: |
+| 15 B (`<!DOCTYPE html>`)  |      ~860000 |                        ~25 min |
+| 40 B (`<svg xmlns=…>` +1) |      ~240000 | ~7 min (real: 76 s en web zip) |
+| 200 B                     |       ~45000 |                       ~1,5 min |
+| 4000 B                    |        pocas |                           ~3 s |
+
 > **Sobre DEFLATE.** `--conocido` recomprime el contenido conocido para casar el
 > flujo comprimido, pero el deflate de cada herramienta (7-Zip, Info-ZIP) y hasta
 > de cada versión de zlib difiere byte a byte, así que solo funciona si el

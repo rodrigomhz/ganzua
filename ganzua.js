@@ -748,11 +748,14 @@ async function runPlainEngine(engine, { file, entry, ciphertext, cand, opts }) {
     }
     return bkcrack.run(spec);
   }
+  // Motores propios: +1 byte de texto plano con el check byte (offset -1).
+  // (bkcrack ya lo hace por su cuenta.)
+  const c = knownPlain.withCheckByte(cand, entry.crypto);
   if (engine === 'nativo C++') {
-    return native.attack(ciphertext, cand.plano, cand.offset, opts.hilos ? Number(opts.hilos) : 0);
+    return native.attack(ciphertext, c.plano, c.offset, opts.hilos ? Number(opts.hilos) : 0);
   }
   // Motor JS paralelo.
-  return recoverKeysParallel(ciphertext, cand.plano, cand.offset, {
+  return recoverKeysParallel(ciphertext, c.plano, c.offset, {
     workers: opts.hilos ? Number(opts.hilos) : undefined,
     onZreduce:
       opts.json || !isTTY
@@ -827,17 +830,23 @@ function pickPlainEngine(opts) {
 }
 
 // Bucle multi-candidato: prueba cada candidato con el motor y para en el primero
-// que recupera claves. Devuelve { keys, usado }.
+// que recupera claves. Un candidato puede traer su propia entrada (`c.entry`,
+// plan --auto sobre varias entradas). Devuelve { keys, usado }.
 async function attackCandidates({ engine, file, entry, ciphertext, candidatos, opts }) {
   let keys = null;
   let usado = null;
   for (let i = 0; i < candidatos.length; i++) {
     const c = candidatos[i];
+    const e = c.entry || entry;
+    const ct = c.entry ? Buffer.concat([e.crypto.header, e.crypto.body]) : ciphertext;
     if (!opts.json && candidatos.length > 1) {
-      note(`  · candidato ${i + 1}/${candidatos.length}: ${c.etiqueta} (${c.plano.length} B @ offset ${c.offset})`);
+      const donde = c.entry ? ` en "${e.name}"` : '';
+      note(
+        `  · candidato ${i + 1}/${candidatos.length}: ${c.etiqueta}${donde} (${c.plano.length} B @ offset ${c.offset})`,
+      );
     }
     try {
-      keys = await runPlainEngine(engine, { file, entry, ciphertext, cand: c, opts });
+      keys = await runPlainEngine(engine, { file, entry: e, ciphertext: ct, cand: c, opts });
     } catch (err) {
       if (!opts.json) note(`    (candidato descartado: ${err.message})`);
       keys = null;
@@ -865,16 +874,25 @@ async function cmdTextoPlano(positionals, opts) {
     );
   }
   const zip = openZip(file);
-  const entry = resolveEntry(zip, opts);
+  // --auto sin --entrada: plan sobre todas las entradas, la más favorable
+  // (más bytes conocidos) primero. Si ninguna tiene firma, se cae al flujo
+  // normal (primera entrada cifrada) para dar el mensaje de siempre.
+  const plan = opts.auto && opts.entrada === undefined ? knownPlain.autoPlan(zip.entries) : [];
+  const entry = plan.length ? plan[0].entry : resolveEntry(zip, opts);
   if (entry.encryption !== 'zipcrypto') {
     fail(`textoplano ataca ZipCrypto por texto plano conocido; "${entry.name}" es ${entry.encryption}`);
   }
 
-  const { candidatos, modoFuente } = buildPlainCandidates(entry, opts);
+  const { candidatos, modoFuente } = plan.length
+    ? { candidatos: plan, modoFuente: 'auto' }
+    : buildPlainCandidates(entry, opts);
   const ciphertext = Buffer.concat([entry.crypto.header, entry.crypto.body]);
   const engine = pickPlainEngine(opts);
   if (!opts.json) {
-    note(`ganzua · ataque de texto plano (${engine}) sobre "${entry.name}" — ${candidatos.length} candidato(s)…`);
+    const objetivo = plan.length
+      ? `${new Set(plan.map((c) => c.entry.index)).size} entrada(s); primero "${entry.name}" (${plan[0].plano.length} B conocidos)`
+      : `"${entry.name}"`;
+    note(`ganzua · ataque de texto plano (${engine}) sobre ${objetivo} — ${candidatos.length} candidato(s)…`);
   }
 
   const started = Date.now();
@@ -900,6 +918,7 @@ async function cmdTextoPlano(positionals, opts) {
       archivo: zip.path,
       motor: engine,
       candidato: usado.etiqueta,
+      entrada_atacada: (usado.entry || entry).name,
       claves: clavesHex,
       salida: outDir,
       extraidas: okCount,
@@ -907,7 +926,7 @@ async function cmdTextoPlano(positionals, opts) {
     });
     return results.every((r) => r.ok) ? 0 : 1;
   }
-  out(`  ✔ texto plano: ${usado.etiqueta}`);
+  out(`  ✔ texto plano: ${usado.etiqueta}${usado.entry ? ` (entrada "${usado.entry.name}")` : ''}`);
   out(`  ✔ claves ZipCrypto: ${clavesHex.join(' ')}  (${secs} s)`);
   for (const r of results) {
     if (r.ok) out(`  ✔ ${r.nombre}${r.directorio ? '' : ` (${r.bytes} B)`}`);

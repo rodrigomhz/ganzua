@@ -40,7 +40,11 @@ static inline bool hasZi(u8 ki, u32 zi) { return keystreaminvexists[ki][(zi & 0x
 
 // --- tablas de multiplicación ----------------------------------------------
 static const u32 MULT = 0x08088405u, MULTINV = 0xd94fa8cdu;
-static std::vector<u8> msbprodfiber2[256], msbprodfiber3[256];
+// Fibras planas (arrays fijos, sin vector en el heap): el bucle de Y7 las
+// consulta 2^16 veces por candidata Z, así que la localidad importa.
+static u8 fiber2[256][4], fiber2n[256];
+static u8 fiber3[256][4], fiber3n[256];
+static inline void fiberPush(u8 (*f)[4], u8* n, u8 m, u8 x) { f[m][n[m]++] = x; }
 
 static const u32 MASK_2_32 = 0xfffffffcu, MASK_8_32 = 0xffffff00u;
 static const u32 MASK_24_32 = 0xff000000u, MASK_26_32 = 0xfc000000u;
@@ -63,11 +67,12 @@ static void initTables() {
   u32 prodinv = 0;
   for (int x = 0; x < 256; x++) {
     u8 m = msb(prodinv);
-    msbprodfiber2[m].push_back(static_cast<u8>(x));
-    msbprodfiber2[static_cast<u8>(m + 1)].push_back(static_cast<u8>(x));
-    msbprodfiber3[static_cast<u8>(m + 255)].push_back(static_cast<u8>(x));
-    msbprodfiber3[m].push_back(static_cast<u8>(x));
-    msbprodfiber3[static_cast<u8>(m + 1)].push_back(static_cast<u8>(x));
+    u8 xb = static_cast<u8>(x);
+    fiberPush(fiber2, fiber2n, m, xb);
+    fiberPush(fiber2, fiber2n, static_cast<u8>(m + 1), xb);
+    fiberPush(fiber3, fiber3n, static_cast<u8>(m + 255), xb);
+    fiberPush(fiber3, fiber3n, m, xb);
+    fiberPush(fiber3, fiber3n, static_cast<u8>(m + 1), xb);
     prodinv += MULTINV;
   }
 }
@@ -132,12 +137,15 @@ struct Attack {
   void exploreYlists(int i) {
     if (found) return;
     if (i != 3) {
-      u32 fy = (ylist[i] - 1) * MULTINV;
-      u32 ffy = (fy - 1) * MULTINV;
-      for (u8 xi : msbprodfiber2[msb(ffy - (ylist[i - 2] & MASK_24_32))]) {
-        u32 yim1 = fy - xi;
-        if (static_cast<u32>(ffy - MULTINV * xi - (ylist[i - 2] & MASK_24_32)) <= MAXDIFF24 &&
-            msb(yim1) == msb(ylist[i - 1])) {
+      const u32 fy = (ylist[i] - 1) * MULTINV;
+      const u32 ffy = (fy - 1) * MULTINV;
+      const u32 yim2_24_32 = ylist[i - 2] & MASK_24_32;
+      const u8 yim1_msb = msb(ylist[i - 1]);
+      const u8 f = msb(ffy - yim2_24_32);
+      for (u8 k = 0, n = fiber2n[f]; k < n; k++) {
+        const u8 xi = fiber2[f][k];
+        const u32 yim1 = fy - xi;
+        if (static_cast<u32>(ffy - MULTINV * xi - yim2_24_32) <= MAXDIFF24 && msb(yim1) == yim1_msb) {
           ylist[i - 1] = yim1;
           xlist[i] = xi;
           exploreYlists(i - 1);
@@ -163,10 +171,15 @@ struct Attack {
       }
     } else {
       u32 prod = (MULTINV * msb(ylist[7]) << 24) - MULTINV;
+      const u32 y6_24_32 = ylist[6] & MASK_24_32;
+      const u8 y6_msb = msb(ylist[6]);
+      const u32 y7_24_32 = ylist[7] & MASK_24_32;
       for (u32 y7_8_24 = 0; y7_8_24 < (1u << 24); y7_8_24 += (1u << 8), prod += (MULTINV << 8)) {
-        for (u8 y7_0_8 : msbprodfiber3[static_cast<u8>(msb(ylist[6]) - msb(prod))]) {
-          if (static_cast<u32>(prod + MULTINV * y7_0_8 - (ylist[6] & MASK_24_32)) <= MAXDIFF24) {
-            ylist[7] = y7_0_8 | y7_8_24 | (ylist[7] & MASK_24_32);
+        const u8 f = static_cast<u8>(y6_msb - msb(prod));
+        for (u8 k = 0, n = fiber3n[f]; k < n; k++) {
+          const u8 y7_0_8 = fiber3[f][k];
+          if (static_cast<u32>(prod + MULTINV * y7_0_8 - y6_24_32) <= MAXDIFF24) {
+            ylist[7] = y7_0_8 | y7_8_24 | y7_24_32;
             exploreYlists(7);
             if (found) return;
           }

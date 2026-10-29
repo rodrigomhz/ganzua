@@ -52,6 +52,50 @@ test('candidatesForEntry: ficheros web (html/svg) por extensión', () => {
   assert.ok(svg.some((c) => c.plano.toString('latin1').startsWith('<?xml')));
 });
 
+test('candidatesForEntry: de más a menos bytes (lo más rápido primero)', () => {
+  const svg = kp.candidatesForEntry({ name: 'logo.svg', method: 0 });
+  assert.ok(svg.length >= 2);
+  for (let i = 1; i < svg.length; i++) assert.ok(svg[i - 1].plano.length >= svg[i].plano.length);
+});
+
+test('autoPlan: la entrada con más texto plano conocido va primero', () => {
+  const zc = (name, method, compressedSize, index) => ({
+    index,
+    name,
+    method,
+    encryption: 'zipcrypto',
+    compressedSize,
+  });
+  const plan = kp.autoPlan([
+    zc('index.html', 0, 500, 0),
+    zc('logo.svg', 0, 300, 1),
+    zc('app.js', 8, 300, 2),
+    { index: 3, name: 'leeme.txt', method: 0, encryption: 'none', compressedSize: 30 },
+    zc('mini.svg', 0, 12 + 20, 4), // cuerpo de 20 B: solo caben firmas cortas
+  ]);
+  assert.strictEqual(plan[0].entry.name, 'logo.svg');
+  assert.ok(plan[0].plano.toString('latin1').startsWith('<svg xmlns='));
+  assert.ok(plan.some((c) => c.entry.name === 'index.html'));
+  assert.ok(!plan.some((c) => c.entry.name === 'app.js'), 'DEFLATE no usa cabeceras en claro');
+  assert.ok(!plan.some((c) => c.entry.name === 'leeme.txt'), 'sin cifrar no se ataca');
+  const mini = plan.filter((c) => c.entry.name === 'mini.svg');
+  assert.ok(mini.length >= 1 && mini.every((c) => c.offset + c.plano.length <= 20));
+  for (let i = 1; i < plan.length; i++) assert.ok(plan[i - 1].plano.length >= plan[i].plano.length);
+});
+
+test('withCheckByte: antepone el check byte en offset -1 (CRC, o la hora con bit 3)', () => {
+  const cand = { etiqueta: 'x', offset: 0, plano: Buffer.from('<!DOCTYPE html>') };
+  const crc = kp.withCheckByte(cand, { flags: 0, crc: 0xab123456, mtime: 0x1234 });
+  assert.strictEqual(crc.offset, -1);
+  assert.strictEqual(crc.plano.length, cand.plano.length + 1);
+  assert.strictEqual(crc.plano[0], 0xab, 'byte alto del CRC');
+  assert.ok(crc.plano.subarray(1).equals(cand.plano));
+  const dd = kp.withCheckByte(cand, { flags: 0x08, crc: 0xab123456, mtime: 0x9a12 });
+  assert.strictEqual(dd.plano[0], 0x9a, 'byte alto de la hora (data descriptor)');
+  const lejos = { ...cand, offset: 512 };
+  assert.strictEqual(kp.withCheckByte(lejos, { flags: 0, crc: 0 }), lejos, 'solo si empieza en el offset 0');
+});
+
 test('deflateVariants recomprime y una variante casa con el flujo real', () => {
   const contenido = Buffer.from('contenido de un fichero que sí comprime '.repeat(8));
   const real = zlib.deflateRawSync(contenido, { level: 6 });
