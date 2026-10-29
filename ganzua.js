@@ -38,6 +38,7 @@ const knownPlain = require('./lib/known-plaintext');
 const deflatePlain = require('./lib/deflate-plain');
 const probeLib = require('./lib/probe');
 const formato = require('./lib/format');
+const ia = require('./lib/ia');
 
 // Below this many candidates the worker-pool overhead is not worth it.
 const PARALLEL_THRESHOLD = 4000;
@@ -65,6 +66,9 @@ const FLAGS_WITH_VALUE = new Set([
   '--maxbytes',
   '--conocido',
   '--bytes',
+  '--pistas',
+  '--modelo',
+  '--cantidad',
 ]);
 
 function parseArgs(argv) {
@@ -84,6 +88,8 @@ function parseArgs(argv) {
     else if (a === '--listar' || a === '--list') opts.listar = true;
     else if (a === '--auto') opts.auto = true;
     else if (a === '--romper') opts.romper = true;
+    else if (a === '--ia') opts.ia = true;
+    else if (a === '--ia-nombres') opts['ia-nombres'] = true;
     else if (a === '--help' || a === '-h') opts.help = true;
     else if (a === '--version' || a === '-v') opts.version = true;
     else if (FLAGS_WITH_VALUE.has(a)) {
@@ -100,6 +106,8 @@ function parseArgs(argv) {
     }
   }
   validateNumericFlags(opts);
+  // Dar pistas implica querer candidatas de la IA.
+  if (opts.pistas !== undefined || opts['ia-nombres']) opts.ia = true;
   return { positionals, opts };
 }
 
@@ -112,6 +120,7 @@ const NUMERIC_FLAGS = {
   hilos: false,
   bytes: false,
   maxbytes: false,
+  cantidad: false,
   offset: true, // allowNegative
 };
 
@@ -207,7 +216,12 @@ function resolveEntry(zip, opts) {
 // Shared search runner (used by `romper` and `busca`)
 // ---------------------------------------------------------------------------
 
+// Las candidatas de la IA (opts.iaWords, ver prepareIa) van SIEMPRE primero:
+// tal cual en máscara; como palabras base (antepuestas) en patrón y romper, de
+// modo que también reciben las mutaciones (Mayúscula, +año, +sufijo…).
 function buildCandidateStream(opts) {
+  const iaWords = opts.iaWords || null;
+  const iaLabel = iaWords ? `candidatas IA (${iaWords.length}) + ` : '';
   if (opts.mascara) {
     let total;
     try {
@@ -215,19 +229,21 @@ function buildCandidateStream(opts) {
     } catch (err) {
       fail(err.message);
     }
+    const mask = candidates.maskCandidates(opts.mascara);
     return {
-      stream: candidates.maskCandidates(opts.mascara),
-      total,
-      label: `máscara "${opts.mascara}"`,
+      stream: iaWords ? candidates.concatSources(iaWords, mask)[Symbol.iterator]() : mask,
+      total: total + (iaWords ? iaWords.length : 0),
+      label: `${iaLabel}máscara "${opts.mascara}"`,
     };
   }
   if (opts.patron) {
     // `--patron` indexa la wordlist (acceso aleatorio) -> en memoria.
-    const words = opts.wordlist ? candidates.loadWordlist(opts.wordlist) : undefined;
+    let words = opts.wordlist ? candidates.loadWordlist(opts.wordlist) : undefined;
+    if (iaWords) words = [...new Set([...iaWords, ...(words || [])])];
     return {
       stream: candidates.patternCandidates(opts.patron, { words, aggressive: opts.agresivo }),
       total: null,
-      label: `patrón "${opts.patron}"`,
+      label: `${iaLabel}patrón "${opts.patron}"`,
     };
   }
   // romper/busca: la wordlist se recorre en pasadas secuenciales -> se puede
@@ -235,19 +251,82 @@ function buildCandidateStream(opts) {
   // enorme (rockyou y mayores) no agota la RAM.
   const extra = `${opts.agresivo ? ' (agresivo)' : ''}${opts.reglas ? ' + reglas' : ''}`;
   if (opts.wordlist) {
-    const words = candidates.wordSource(opts.wordlist);
+    const file = candidates.wordSource(opts.wordlist);
+    const words = iaWords ? candidates.concatSources(iaWords, file) : file;
     return {
       stream: candidates.romperCandidates({ words, aggressive: opts.agresivo, rules: opts.reglas }),
       total: null, // no se preestima para no leer entera la wordlist grande
-      label: `wordlist ${path.basename(opts.wordlist)} (streaming) + patrones${extra}`,
+      label: `${iaLabel}wordlist ${path.basename(opts.wordlist)} (streaming) + patrones${extra}`,
     };
   }
-  const total = candidates.estimateCount({ aggressive: opts.agresivo, rules: opts.reglas });
+  const words = iaWords ? [...iaWords, ...candidates.loadBundledWordlist()] : undefined;
+  const total = candidates.estimateCount({ words, aggressive: opts.agresivo, rules: opts.reglas });
   return {
-    stream: candidates.romperCandidates({ aggressive: opts.agresivo, rules: opts.reglas }),
+    stream: candidates.romperCandidates({ words, aggressive: opts.agresivo, rules: opts.reglas }),
     total,
-    label: `wordlist común + patrones típicos${extra}`,
+    label: `${iaLabel}wordlist común + patrones típicos${extra}`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Candidatas por IA (--ia / --pistas)
+// ---------------------------------------------------------------------------
+
+function hostOf(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+// Nombres que pueden inspirar la contraseña: el del archivo y sus entradas.
+function zipNames(zip) {
+  return [path.basename(zip.path), ...zip.entries.map((e) => e.name)];
+}
+
+// Pide candidatas al modelo. Antes de enviar nada, dice A QUIÉN y QUÉ se envía.
+async function askIa(opts, nombres = []) {
+  const enviar = opts['ia-nombres'] ? nombres : [];
+  const cfg = ia.config(process.env, { model: opts.modelo });
+  // Antes de anunciar ningún envío: qué mandar y con qué clave.
+  if (!opts.pistas && !enviar.length) fail('IA: necesita pistas (--pistas "…") o --ia-nombres');
+  if (!cfg.key) fail(`IA: ${ia.MISSING_KEY}`);
+  if (!opts.json) {
+    const que = [opts.pistas ? 'tus pistas' : null, enviar.length ? `${enviar.length} nombre(s) de fichero` : null]
+      .filter(Boolean)
+      .join(' + ');
+    note(`ganzua · IA: pidiendo candidatas a ${cfg.model} (${hostOf(cfg.url)}) — se envía: ${que || 'nada'}`);
+  }
+  try {
+    const r = await ia.generateCandidates({
+      pistas: opts.pistas,
+      nombres: enviar,
+      cantidad: opts.cantidad,
+      model: opts.modelo,
+    });
+    if (!opts.json) note(`  IA: ${r.candidatas.length} candidatas recibidas (${r.modelo})`);
+    return r;
+  } catch (err) {
+    if (err instanceof ia.IaError) fail(`IA: ${err.message}`);
+    throw err;
+  }
+}
+
+// Con --ia, obtiene las candidatas una vez y las deja en opts.iaWords para
+// buildCandidateStream. La IA no es determinista: con --checkpoint la lista se
+// guarda en él y, al reanudar, se reutiliza en vez de pedir otra distinta.
+async function prepareIa(opts, nombres = []) {
+  if (!opts.ia || opts.iaWords) return;
+  if (opts.checkpoint) {
+    const cp = checkpoint.load(opts.checkpoint);
+    if (cp && Array.isArray(cp.ia) && cp.ia.length) {
+      opts.iaWords = cp.ia;
+      if (!opts.json) note(`  IA: reutilizando ${cp.ia.length} candidatas guardadas en el checkpoint`);
+      return;
+    }
+  }
+  opts.iaWords = (await askIa(opts, nombres)).candidatas;
 }
 
 function progressReporter(total) {
@@ -289,7 +368,8 @@ async function locatePassword(zip, entry, opts, { quiet = false } = {}) {
     }
   }
   const onCheckpoint = cpFile
-    ? (position) => checkpoint.save(cpFile, { firma, archivo: zip.path, entrada: entry.index, position, total })
+    ? (position) =>
+        checkpoint.save(cpFile, { firma, archivo: zip.path, entrada: entry.index, position, total, ia: opts.iaWords })
     : undefined;
 
   if (!quiet && !opts.json) {
@@ -326,7 +406,14 @@ async function locatePassword(zip, entry, opts, { quiet = false } = {}) {
 
   if (cpFile) {
     if (result.stopped) {
-      checkpoint.save(cpFile, { firma, archivo: zip.path, entrada: entry.index, position: result.position, total });
+      checkpoint.save(cpFile, {
+        firma,
+        archivo: zip.path,
+        entrada: entry.index,
+        position: result.position,
+        total,
+        ia: opts.iaWords,
+      });
     } else {
       checkpoint.remove(cpFile); // encontrada o agotada: ya no sirve
     }
@@ -403,6 +490,9 @@ async function runSearch(zip, entry, opts) {
     note(`    • modo agresivo:        ganzua romper ${path.basename(zip.path)} --agresivo`);
   }
   note(`    • patrón a medida:      ganzua romper ${path.basename(zip.path)} --patron "Palabra_%s_%d"`);
+  if (!opts.ia) {
+    note(`    • pistas a la IA:       ganzua romper ${path.basename(zip.path)} --pistas "mascota, año, equipo…"`);
+  }
   if (entry.encryption === 'aes') {
     note(`    • GPU / hashcat:        ganzua material ${path.basename(zip.path)} > hash.txt   (modo 13600)`);
   }
@@ -508,6 +598,7 @@ async function runHashcat(zip, entry, opts) {
 
 // Elige motor: hashcat (si se pide y está disponible para AES) o el propio.
 async function crack(zip, entry, opts) {
+  await prepareIa(opts, zipNames(zip));
   if (opts.hashcat) {
     if (entry.encryption !== 'aes') {
       note('  hashcat (modo 13600) solo cubre AES; usando el motor propio');
@@ -535,8 +626,8 @@ async function cmdBusca(positionals, opts) {
   const [file, maybeWordlist] = positionals;
   if (!file) fail('uso: ganzua busca <archivo.zip> [wordlist.txt | --patron "..."] [--agresivo] [--json]');
   if (maybeWordlist && !opts.wordlist && !opts.patron && !opts.mascara) opts.wordlist = maybeWordlist;
-  if (!opts.wordlist && !opts.patron && !opts.mascara) {
-    fail('busca necesita una wordlist, --patron o --mascara (para valores por defecto usa: ganzua romper)');
+  if (!opts.wordlist && !opts.patron && !opts.mascara && !opts.ia) {
+    fail('busca necesita una wordlist, --patron, --mascara o --pistas (para valores por defecto usa: ganzua romper)');
   }
   const zip = openZip(file);
   const entry = resolveEntry(zip, opts);
@@ -609,6 +700,7 @@ async function cmdExtrae(positionals, opts) {
         fail(`contraseña incorrecta para "${encTargets[0].name}"`);
       }
     } else {
+      await prepareIa(opts, zipNames(zip));
       const { result } = await locatePassword(zip, encTargets[0], opts);
       if (!result.found) {
         if (opts.json) emitJson({ archivo: zip.path, encontrada: false, extraidas: 0 });
@@ -870,6 +962,7 @@ async function atacaSondaRomper(reco, opts) {
     entry.encryption === 'aes'
       ? `WinZip AES-${aesCrypto.STRENGTH[entry.crypto.strength]?.bits ?? '?'}`
       : `ZipCrypto (${methodName(entry.method)})`;
+  await prepareIa(opts, [archivo, entry.name].filter(Boolean));
   const { stream, total, label } = buildCandidateStream(opts);
   const confianza =
     entry.encryption === 'aes'
@@ -952,7 +1045,9 @@ async function atacaSondaRomper(reco, opts) {
       return 1;
     }
     note(`  ✗ no encontrada (${tried} candidatas en ${secs} s)`);
-    note('  Prueba:  --wordlist grande.txt | --agresivo | --reglas | --patron "..." | --mascara "..."');
+    note(
+      '  Prueba:  --wordlist grande.txt | --agresivo | --reglas | --patron "..." | --mascara "..." | --pistas "..."',
+    );
     if (entry.encryption === 'aes')
       note('  (AES es lento por candidata; para fuerza bruta grande usa GPU/hashcat con `material`.)');
     return 1;
@@ -1042,6 +1137,48 @@ async function cmdAtacaSonda(positionals, opts) {
   out('');
   out('  En tu máquina (con el zip completo), descifra TODO sin contraseña:');
   out(`    node ganzua.js extrae "${archivo}" --claves ${clavesHex.join(':')} --salida ./out`);
+  return 0;
+}
+
+// Nombres de fichero de un zip o de una sonda (para --ia-nombres).
+function namesFromFile(file) {
+  if (/\.json$/i.test(file)) {
+    let probe;
+    try {
+      probe = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch (err) {
+      fail(`no se pudo leer la sonda: ${err.message}`);
+    }
+    return [probe.archivo, probe.entrada && probe.entrada.nombre].filter(Boolean);
+  }
+  return zipNames(openZip(file));
+}
+
+// `ia` — genera candidatas con IA a partir de pistas y las imprime, una por
+// línea, o las guarda como wordlist (--salida) para romper/ataca-sonda/hashcat.
+async function cmdIa(positionals, opts) {
+  const [file] = positionals;
+  if (!opts.pistas && !opts['ia-nombres']) {
+    fail(
+      'uso: ganzua ia [archivo.zip|sonda.json] --pistas "…" [--ia-nombres] [--cantidad N] [--modelo m] [--salida lista.txt]',
+    );
+  }
+  let nombres = [];
+  if (opts['ia-nombres']) {
+    if (!file) fail('--ia-nombres necesita el archivo (zip o sonda) del que tomar los nombres');
+    nombres = namesFromFile(file);
+  }
+  const r = await askIa(opts, nombres);
+  if (opts.salida) fs.writeFileSync(opts.salida, r.candidatas.join('\n') + '\n');
+  if (opts.json) {
+    emitJson({ modelo: r.modelo, api: r.host, candidatas: r.candidatas, uso: r.uso, salida: opts.salida || null });
+    return 0;
+  }
+  if (opts.salida) {
+    note(`  guardadas en ${opts.salida} — úsala con: ganzua romper <archivo.zip> --wordlist ${opts.salida}`);
+  } else {
+    for (const c of r.candidatas) out(c);
+  }
   return 0;
 }
 
@@ -1411,6 +1548,21 @@ OBTENER EL CONTENIDO
                              alnum, hex, print, o los caracteres literales.
       --maxbytes <N>         Tamaño máximo de entrada a reconstruir por CRC-32.
 
+CANDIDATAS POR IA (opcional; necesita clave de API)
+  Si recuerdas algo de tu contraseña, un modelo de lenguaje (por defecto
+  DeepSeek V4.1 Flash vía la API de OpenCode) genera candidatas a partir de tus
+  pistas; se prueban las primeras y también reciben las mutaciones de romper.
+  Solo se envían las pistas (y, con --ia-nombres, los nombres de fichero);
+  nunca el contenido ni el material criptográfico.
+      --pistas "<texto>"     Lo que recuerdes: nombres, fechas, aficiones…
+                             (activa la IA en romper/busca/extrae/ataca-sonda).
+      --ia-nombres           Envía también los nombres del archivo y entradas.
+      --cantidad <N>         Nº de candidatas a pedir (por defecto 150).
+      --modelo <id>          Modelo (por defecto deepseek-v4.1-flash).
+  ia [archivo] --pistas "…"  Solo genera la lista (stdout o --salida fichero).
+  Entorno: OPENCODE_API_KEY (clave), GANZUA_IA_URL (endpoint compatible con
+  OpenAI; por defecto https://opencode.ai/inference/openai/v1), GANZUA_IA_MODELO.
+
 COMANDOS DE APOYO
   formato  <archivo>         Identifica el formato (ZIP/7z/RAR/…) y cómo atacarlo.
   analiza  <archivo.zip>     Detecta el cifrado y muestra salt/verificador.
@@ -1441,6 +1593,7 @@ EJEMPLOS
   ganzua romper   archivo.zip
   ganzua romper   archivo.zip --agresivo
   ganzua romper   archivo.zip --wordlist rockyou.txt
+  ganzua romper   archivo.zip --pistas "mi perra Luna, nací en 1998"
   ganzua analiza  archivo.zip
   ganzua material archivo.zip > hash.txt
   ganzua verifica archivo.zip "Secreto_2024"
@@ -1460,6 +1613,7 @@ const COMMANDS = {
   sonda: cmdSonda,
   'ataca-sonda': cmdAtacaSonda,
   rescata: cmdRescata,
+  ia: cmdIa,
   busca: cmdBusca,
   formato: cmdFormato,
   analiza: cmdAnaliza,

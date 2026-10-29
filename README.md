@@ -266,6 +266,48 @@ El resto de caracteres son literales:
 node ganzua.js romper archivo.zip --mascara "Casa?d?d?d?d"   # Casa0000…Casa9999
 ```
 
+### Recuerdas algo de la contraseña: candidatas por IA
+
+Si recuerdas pistas de **tu** contraseña (el nombre de la mascota, una fecha, tu
+equipo…), `--pistas` pide a un modelo de lenguaje candidatas plausibles
+(combinaciones, mayúsculas, leet, años, sufijos). Por defecto usa **DeepSeek
+V4.1 Flash** (`deepseek-v4.1-flash`) a través de la
+[API de OpenCode](https://opencode.ai/docs/zen), compatible con OpenAI. Las
+candidatas de la IA se prueban **las primeras** y además pasan por las
+mutaciones de `romper` (y de `--reglas`/`--agresivo` si los añades):
+
+```bash
+export OPENCODE_API_KEY=…            # consola de OpenCode → API Keys
+node ganzua.js romper archivo.zip --pistas "mi perra Luna, nací en 1998, del Betis"
+#   ganzua · IA: pidiendo candidatas a deepseek-v4.1-flash (opencode.ai) — se envía: tus pistas
+#     IA: 150 candidatas recibidas (deepseek-v4.1-flash)
+
+# También en extrae, busca y ataca-sonda --romper:
+node ganzua.js ataca-sonda sonda.json --romper --pistas "Luna, Sevilla, 77"
+
+# O solo genera la lista para reutilizarla (romper --wordlist, hashcat…):
+node ganzua.js ia --pistas "Luna, 1998, Betis" --cantidad 300 --salida ia.txt
+```
+
+**Privacidad:** solo se envían tus pistas (y, si añades `--ia-nombres`, los
+nombres del archivo y de sus entradas). **Nunca** el contenido, el cifrado, el
+salt, el verificador ni las claves. Antes de enviar nada, ganzua dice a qué
+modelo y qué se envía. Sin `--pistas`/`--ia-nombres` no se contacta con ninguna
+API.
+
+| Variable / opción  | Para qué                                                                         |
+| ------------------ | -------------------------------------------------------------------------------- |
+| `OPENCODE_API_KEY` | Clave de la API (o `GANZUA_IA_KEY` para otro proveedor).                         |
+| `GANZUA_IA_URL`    | Endpoint compatible con OpenAI (def. `https://opencode.ai/inference/openai/v1`). |
+| `GANZUA_IA_MODELO` | Modelo por defecto (`deepseek-v4.1-flash`); `--modelo <id>` lo cambia.           |
+| `--cantidad N`     | Nº de candidatas a pedir (150 por defecto, máx. 1000).                           |
+| `--ia-nombres`     | Envía también los nombres de fichero como contexto.                              |
+
+Con `--checkpoint`, la lista de la IA se guarda en el checkpoint y al reanudar
+se **reutiliza** (el modelo no es determinista: pedir otra cambiaría el orden).
+La API de DeepSeek directa también sirve:
+`GANZUA_IA_URL=https://api.deepseek.com/v1 GANZUA_IA_MODELO=deepseek-chat`.
+
 ### Búsquedas largas: checkpoint y Ctrl+C
 
 Para ataques largos, `--checkpoint <fichero>` guarda el progreso periódicamente
@@ -316,6 +358,7 @@ qué usar en vez de fallar sin más.
 | `sonda`       | Exporta un paquete mínimo (KB) para atacar un ZIP enorme sin moverlo.    |
 | `ataca-sonda` | Desde una sonda: `--romper` la contraseña (ZipCrypto/AES) o las claves.  |
 | **`rescata`** | **Obtiene contenido SIN contraseña** (entradas sin cifrar + CRC-32).     |
+| `ia`          | Genera candidatas con IA desde tus pistas (OpenCode / DeepSeek).         |
 | `formato`     | Identifica el formato (ZIP/7z/RAR/…) e indica cómo atacarlo.             |
 | `analiza`     | Cifrado, salt/verificador/auth y qué es obtenible sin contraseña.        |
 | `material`    | Emite el hash `$zip2$` para `hashcat -m 13600` / John `zip2john`.        |
